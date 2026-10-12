@@ -17,8 +17,13 @@ The first layer starts at ``--top`` (it must lie above the highest station).
 Example::
 
     python tools/nd_to_velest.py "inputs/My inputs/kiratzi87.nd" \\
-        --tops -3 1 2 3 4 6 8 10 12 14 16 18 20 23 26 --moho 30 \\
-        --smooth 3 --out inputs/vmodel_kiratzi87.dat
+        --tops -3 0 1 2 3 4 6 8 10 13 16 20 25 --moho 30 \\
+        --vtop 3.5 --min-increment 0.05 --out inputs/vmodel_kiratzi87.dat
+
+The first layer (-3 to 0 km here) only covers station elevations; giving
+every starting model the same, low --vtop keeps it from acting as a
+different velocity floor in each model (low-velocity layers are not
+allowed, and the first layer is heavily damped).
 """
 
 from __future__ import annotations
@@ -66,19 +71,23 @@ def layer_average(rows, top, bottom, column=1, interp="linear"):
 
 
 def build_model(
-    rows, tops, moho, smooth=0, min_increment=0.02, interp="linear"
+    rows, tops, moho, smooth=0, min_increment=0.02, interp="linear", vtop=None
 ):
     velocities = []
     for i, top in enumerate(tops):
         bottom = tops[i + 1] if i + 1 < len(tops) else moho
+        if i == 0 and vtop is not None:
+            velocities.append(vtop)
+            continue
         velocities.append(
             layer_average(rows, max(top, rows[0][0]), bottom, interp=interp)
         )
-    v = np.asarray(velocities)
+    v = np.asarray(velocities, dtype=float)
     if smooth > 1:
-        padded = np.pad(v, (smooth // 2, smooth // 2), mode="edge")
-        v = np.convolve(padded, np.ones(smooth) / smooth, mode="valid")
-        v[0] = velocities[0]  # keep the surface layer as given
+        # smooth below the first layer only (it may be a fixed dummy layer)
+        body = v[1:]
+        padded = np.pad(body, (smooth // 2, smooth // 2), mode="edge")
+        v[1:] = np.convolve(padded, np.ones(smooth) / smooth, mode="valid")
     for i in range(1, len(v)):
         v[i] = max(v[i], v[i - 1] + min_increment)
     return [float(x) for x in np.round(v, 2)]
@@ -109,6 +118,12 @@ def main():
     parser.add_argument("--tops", nargs="+", type=float, required=True)
     parser.add_argument("--moho", type=float, required=True)
     parser.add_argument("--vmoho", type=float, default=8.0)
+    parser.add_argument(
+        "--vtop",
+        type=float,
+        help="velocity of the first layer (e.g. a common, damped layer above "
+        "sea level); default: the profile average over that layer",
+    )
     parser.add_argument("--smooth", type=int, default=0)
     parser.add_argument(
         "--interp",
@@ -127,7 +142,13 @@ def main():
         raise ValueError("--moho must be deeper than the last layer top")
     rows = read_nd_crust(args.nd)
     vels = build_model(
-        rows, tops, args.moho, args.smooth, args.min_increment, args.interp
+        rows,
+        tops,
+        args.moho,
+        args.smooth,
+        args.min_increment,
+        args.interp,
+        args.vtop,
     )
     if vels[-1] >= args.vmoho:
         raise ValueError("--vmoho must exceed the deepest crustal velocity")

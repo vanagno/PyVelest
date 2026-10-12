@@ -1,7 +1,7 @@
 from pathlib import Path
 from src.model.Models import LAYER, VMODEL
 from pandas import read_csv, DataFrame, concat
-from numpy import array_equal, allclose, arange
+from numpy import array_equal, allclose, arange, inf
 from shutil import copy
 
 
@@ -271,6 +271,23 @@ def simplify_model(
 
         layers["vs"] = vs["velocity"].to_numpy(dtype=float)
 
+    # Layer thickness; the last layer is the half-space.
+    layers["thickness"] = (
+        layers["depth"].shift(-1) - layers["depth"]
+    ).fillna(inf)
+
+    def merged_velocity(column, upper, lower):
+        """Thickness-weighted slowness average of two layers, which keeps
+        the vertical travel time through them. Merging into the half-space
+        keeps the half-space velocity."""
+        if lower["thickness"] == inf:
+            return lower[column]
+        h = upper["thickness"] + lower["thickness"]
+        return h / (
+            upper["thickness"] / upper[column]
+            + lower["thickness"] / lower[column]
+        )
+
     # =============================================================
     # 9. Simplify the model
     #
@@ -333,7 +350,7 @@ def simplify_model(
                 layers.at[
                     layers.index[i + 1],
                     "vp",
-                ] = (current["vp"] + deeper["vp"]) / 2.0
+                ] = merged_velocity("vp", current, deeper)
 
                 # -------------------------------------------------
                 # Average Vs if available
@@ -344,7 +361,7 @@ def simplify_model(
                     layers.at[
                         layers.index[i + 1],
                         "vs",
-                    ] = (current["vs"] + deeper["vs"]) / 2.0
+                    ] = merged_velocity("vs", current, deeper)
 
                 # -------------------------------------------------
                 # Keep the TOP depth of the first layer
@@ -354,6 +371,11 @@ def simplify_model(
                     layers.index[i + 1],
                     "depth",
                 ] = current["depth"]
+
+                layers.at[
+                    layers.index[i + 1],
+                    "thickness",
+                ] = current["thickness"] + deeper["thickness"]
 
                 # -------------------------------------------------
                 # Remove current layer
@@ -495,6 +517,17 @@ def simplified2vmodel(config, simplified_modelfile, final_modelfile):
     write_vmodel(vmodel, final_modelfile)
 
 
+def ensemble_reference_model(config, stage_n, run_n) -> Path:
+    """Model the random ensemble of a stage-1/3 run is generated around."""
+    if stage_n == 1:
+        if run_n == 1:
+            return Path(config.INPUTS.vmodel)
+        return Path("outputs/stage_01") / f"run_{run_n-1:02d}" / "summary" / "model.mod"
+    if run_n == 1:
+        return Path("outputs/stage_02") / "model.mod"
+    return Path("outputs/stage_03") / f"run_{run_n-1:02d}" / "summary" / "model.mod"
+
+
 def prepare_model(config, stage_n, run_n=None):
     if stage_n == 1:
 
@@ -503,12 +536,7 @@ def prepare_model(config, stage_n, run_n=None):
         run_dir = rootout / f"run_{run_n:02d}"
 
         # Read / Implement / Write
-        if run_n == 1:
-            vmodel_input = Path(config.INPUTS.vmodel)
-        else:
-            vmodel_input = (
-                rootout / f"run_{run_n-1:02d}" / "summary" / "model.mod"
-            )
+        vmodel_input = ensemble_reference_model(config, 1, run_n)
         n_models = config.SYNTHETIC_MODELS.n_models
         velocity_std = config.SYNTHETIC_MODELS.velocity_std
         depth_std = config.SYNTHETIC_MODELS.depth_std
@@ -546,12 +574,7 @@ def prepare_model(config, stage_n, run_n=None):
         run_dir = rootout / f"run_{run_n:02d}"
 
         # Read / Implement / Write
-        if run_n == 1:
-            vmodel_input = Path("outputs/stage_02") / "model.mod"
-        else:
-            vmodel_input = (
-                rootout / f"run_{run_n-1:02d}" / "summary" / "model.mod"
-            )
+        vmodel_input = ensemble_reference_model(config, 3, run_n)
         n_models = config.STAGE_03.n_models
         velocity_std = config.SYNTHETIC_MODELS.velocity_std
         depth_std = config.SYNTHETIC_MODELS.depth_std

@@ -69,8 +69,10 @@ PICK_WEIGHTS:
 
 SYNTHETIC_MODELS:
   n_models: 50
-  # 0.05 keeps the bias of the random-model generator small for these
-  # fairly flat crustal models (see docs/ioannina_workflow.md)
+  # The generator perturbs velocity steps and rejects steps < 0.01 km/s, so
+  # small steps bias the ensemble. With 0.05 and the starting models from
+  # tools/nd_to_velest.py (--min-increment 0.05) the ensemble mean stays
+  # within ~0.06 km/s of the starting model.
   velocity_std: 0.05
   depth_std: 0.5
   seed: 1

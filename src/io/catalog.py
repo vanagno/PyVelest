@@ -193,13 +193,11 @@ def summarize_catalog(config):
         mag = pm.mag if pm else None
         # Use the catalog's own values when present, otherwise compute
         # them from the picks at stations inside STUDY_AREA.
-        gap = getattr(quality, "azimuthal_gap", None) or (
-            azimuthal_gap(picked.values()) if picked else None
+        gap = getattr(quality, "azimuthal_gap", None) or azimuthal_gap(
+            picked.values()
         )
         rms = getattr(quality, "standard_error", None) or None
-        nst = getattr(quality, "used_station_count", None) or (
-            len(picked) or None
-        )
+        nst = getattr(quality, "used_station_count", None) or len(picked)
         erh = _horizontal_error_km(po)
         erz = getattr(po.depth_errors, "uncertainty", None)
         erz = erz * 1e-3 if erz else None
@@ -634,6 +632,13 @@ def summarize_single_events(single_events_file, sum_outfile):
         is_header = events_df["ort"].notna()
         events_df.loc[is_header, "nst"] = (
             events_df.loc[is_header, "eid"].map(n_sta).fillna(0)
+        )
+        # VELEST's GAP also counts class-4 picks; recompute it from the
+        # usable ones (S continuation rows carry the P azimuth).
+        u_gap = usable.groupby("eid")["azm"].apply(azimuthal_gap)
+        events_df.loc[is_header, "gap_velest"] = events_df.loc[is_header, "gap"]
+        events_df.loc[is_header, "gap"] = (
+            events_df.loc[is_header, "eid"].map(u_gap).fillna(360.0)
         )
     events_df.to_csv(sum_outfile, index=False, float_format="%.3f")
     return events_df

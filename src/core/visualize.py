@@ -1,7 +1,7 @@
 from ultraplot import Figure
 from matplotlib import rcParams
 from pathlib import Path
-from src.io.model import read_vmodel, final_state
+from src.io.model import read_vmodel, final_state, ensemble_reference_model
 from numpy import array, asarray, arange, linspace, cos, radians
 from pandas import read_csv, concat
 from obspy.geodetics.base import degrees2kilometers as d2k
@@ -200,8 +200,8 @@ def plot_models(config, stage_n, run_n):
 
         fig_outfile = Path("figures") / f"models_st03_run_{run_n:02d}.png"
 
-    imodel = config.INPUTS.vmodel
-    imodel = read_vmodel(imodel)
+    # the model this run's random ensemble was generated around
+    imodel = read_vmodel(ensemble_reference_model(config, stage_n, run_n))
 
     model_dirs = _model_dirs(config, stage_n, run_dir)
     imodel_files = [d / "model.mod" for d in model_dirs]
