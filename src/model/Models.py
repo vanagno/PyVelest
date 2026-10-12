@@ -9,11 +9,17 @@ from numpy import random, asarray, all, diff, any, empty, cumsum, sum, isclose
 
 
 class INPUTS_(BaseModel):
-    """Quality thresholds used to select catalog events."""
+    """Input files, and how to treat unconstrained catalog depths."""
 
     catalog: str = Field(default=Path("inputs/select.out"))
     stations: str = Field(default=Path("inputs/stations.csv"))
     vmodel: str = Field(default=Path("inputs/vmodel.dat"))
+    # Catalog depths shallower than this are treated as unconstrained (e.g.
+    # pinned at 0 km by the locator): VELEST starts those events at
+    # start_depth_km instead, because a relocation started at the free
+    # surface tends to stay there. Leave empty to keep catalog depths.
+    unconstrained_depth_below_km: Optional[float] = None
+    start_depth_km: float = Field(default=10.0, ge=0.0)
 
 
 class STUDY_AREA_(BaseModel):
@@ -60,6 +66,9 @@ class EVENT_SELECTION_(BaseModel):
     cell_count_depth: int = Field(default=4, ge=1)
     max_horizontal_error_km: Optional[float] = Field(default=None, ge=0.0)
     max_depth_error_km: Optional[float] = Field(default=None, ge=0.0)
+    # Depth errors below this mean the depth was not free (VELEST reports
+    # ~0 for hypocentres stuck on a layer boundary); such events are dropped.
+    min_depth_error_km: Optional[float] = Field(default=None, ge=0.0)
     max_rms_sec: Optional[float] = Field(default=None, ge=0.0)
     max_gap_deg: Optional[float] = Field(default=None, ge=0.0)
     min_used_stations: Optional[int] = Field(default=None, ge=0)
@@ -72,6 +81,7 @@ class RESELECTION_(BaseModel):
 
     max_horizontal_error_km: Optional[float] = Field(default=None, ge=0.0)
     max_depth_error_km: Optional[float] = Field(default=None, ge=0.0)
+    min_depth_error_km: Optional[float] = Field(default=None, ge=0.0)
     max_rms_sec: Optional[float] = Field(default=None, ge=0.0)
     max_gap_deg: Optional[float] = Field(default=None, ge=0.0)
     min_used_stations: Optional[int] = Field(default=None, ge=0)
@@ -98,10 +108,16 @@ class REFERENCE_STATION_(BaseModel):
 
 
 class PICK_WEIGHTS_(BaseModel):
-    """Mapping of pick probabilities (0-1, e.g. PhaseNet) to VELEST weight
-    classes 0-4. A pick with probability >= thresholds[i] gets class i;
-    anything below the last threshold gets class 4 (weight 0)."""
+    """Mapping of pick probabilities (0-1, e.g. PhaseNet, read from the weight
+    column of a HypoDD phase file) to VELEST weight classes 0-4. A pick with
+    probability >= thresholds[i] gets class i; anything below the last
+    threshold gets class 4, which VELEST drops from simultaneous inversions
+    and weights by 1/256 in single-event relocations.
 
+    Off by default: for other formats (e.g. Nordic) ObsPy's time_weight is
+    not a probability."""
+
+    enabled: bool = False
     probability_thresholds: list[float] = Field(
         default_factory=lambda: [0.85, 0.70, 0.55, 0.40],
         min_length=4,

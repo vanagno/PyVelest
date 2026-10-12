@@ -23,9 +23,18 @@ from src.core.final import (
 
 
 class Main:
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str, stages=(1, 2, 3, 4, 5)):
         self.config = read_config(config_path)
-        prepare_workspace(self.config)
+        # Later stages need the outputs of earlier ones: only wipe the
+        # workspace when the run starts from stage 1.
+        clean = self.config.GLOBAL_SETTINGS.clean_workspace
+        if clean and min(stages) > 1:
+            print(
+                "+++ clean_workspace ignored: --stages does not include "
+                "stage 1, earlier outputs are kept"
+            )
+            clean = False
+        prepare_workspace(self.config, clean=clean)
 
     def load_catalog(self):
         self.catalog = summarize_catalog(self.config)
@@ -69,15 +78,27 @@ class Main:
             plot_statistics(self.config, stage_n=3, run_n=n)
 
     def stage_04(self):
+        # Stability test (Kissling et al., 1994). run_00 inverts the
+        # unperturbed events with the same model and station delays; the
+        # perturbed runs must return to its positions. Stage 4 is a
+        # diagnostic: a failed run is reported, not fatal.
         n_runs = self.config.STAGE_04.n_runs
-        for n in range(1, n_runs + 1):
-            print(f"+++ Execution number {n} from stage_04 ...")
+        reference_ok = True
+        for n in range(0, n_runs + 1):
+            label = "reference run" if n == 0 else f"execution number {n}"
+            print(f"+++ Stage_04 {label} ...")
             prepare_station(self.config, stage_n=4, run_n=n)
             prepare_model(self.config, stage_n=4, run_n=n)
             prepare_catalog(self.config, stage_n=4, run_n=n)
             prepare_cmn(self.config, stage_n=4, run_n=n)
-            run_velest(self.config, stage_n=4, run_n=n)
-            plot_dislocations(self.config, stage_n=4, run_n=n)
+            try:
+                run_velest(self.config, stage_n=4, run_n=n)
+                if n > 0 and reference_ok:
+                    plot_dislocations(self.config, stage_n=4, run_n=n)
+            except (RuntimeError, ValueError) as exc:
+                print(f"!!! stage_04 run {n:02d} skipped: {exc}")
+                if n == 0:
+                    reference_ok = False
 
     def stage_05(self):
         prepare_station(self.config, stage_n=5)
@@ -110,7 +131,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    app = Main(args.config)
+    app = Main(args.config, stages=args.stages)
     if {1, 2, 5} & set(args.stages):
         app.load_catalog()
     for stage_n in sorted(args.stages):

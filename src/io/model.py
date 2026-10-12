@@ -30,6 +30,21 @@ def read_vmodel(vmodel_file: str | Path) -> VMODEL:
     return vmodel
 
 
+def final_state(states):
+    """Final velocities of ONE inversion: its last printed velocity state.
+
+    ``states`` is one model's velocity_summary.csv (velocity states in the
+    order VELEST printed them). The last block of rows sharing the same
+    (iteration, backup, state_type) is the model VELEST ended with, whether
+    it was printed as a normal iteration or as the state after a BACKUP.
+    """
+    key = states[["iteration", "backup", "state_type"]].astype(str).agg(
+        "|".join, axis=1
+    )
+    block = (key != key.shift()).cumsum()
+    return states[block == block.iloc[-1]]
+
+
 def simplify_model(
     df,
     averaged_modelfile,
@@ -57,6 +72,9 @@ def simplify_model(
             layer
             depth
             velocity
+
+        Optional column ``source`` identifies the inversion each row comes
+        from; each inversion then contributes its own final state.
 
         model=1 -> Vp
         model=2 -> Vs
@@ -121,17 +139,16 @@ def simplify_model(
     # 2. Select last inversion iteration
     # =============================================================
 
-    state_type = (
-        "final_state"
-        if "final_state" in data.state_type.values
-        else "iteration"
-    )
-
-    last_iteration = data[data.state_type == state_type].iteration.max()
-
-    data = data[
-        (data["iteration"] == last_iteration) & (data.state_type == state_type)
-    ].copy()
+    # Each inversion contributes its own final state. (Selecting one
+    # state_type/iteration for all inversions at once silently dropped every
+    # inversion that ended differently - often all but one or two.)
+    if "source" in data:
+        data = concat(
+            [final_state(group) for _, group in data.groupby("source")]
+        )
+    else:
+        data = final_state(data)
+    last_iteration = data["iteration"].max()
 
     # =============================================================
     # 3. Check Vp and Vs availability
@@ -608,8 +625,10 @@ def finalized_inverted_models(config, stage_n, run_n):
     final_modelfile = run_dir / "summary" / "model.mod"
 
     # processing
-    omodels = [read_csv(i) for i in omodel_files]
-    omodels = concat(omodels)
+    omodels = [
+        read_csv(f).assign(source=f.parent.name) for f in omodel_files
+    ]
+    omodels = concat(omodels, ignore_index=True)
 
     merge_thr = config.SYNTHETIC_MODELS.merging_threshold_km_s
     simplify_model(

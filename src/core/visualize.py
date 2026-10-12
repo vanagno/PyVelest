@@ -1,7 +1,7 @@
 from ultraplot import Figure
 from matplotlib import rcParams
 from pathlib import Path
-from src.io.model import read_vmodel
+from src.io.model import read_vmodel, final_state
 from numpy import array, asarray, arange, linspace, cos, radians
 from pandas import read_csv, concat
 from obspy.geodetics.base import degrees2kilometers as d2k
@@ -216,17 +216,8 @@ def plot_models(config, stage_n, run_n):
     imodels = [read_vmodel(m) for m in imodel_files]
     omodels = []
     for omodel_file in omodels_files:
-        omodel = read_csv(omodel_file)
-        state_type = (
-            "final_state"
-            if "final_state" in omodel.state_type.values
-            else "iteration"
-        )
-        omodel = omodel[
-            (omodel.model == 1)
-            & (omodel.iteration == omodel.iteration.max())
-            & (omodel.state_type == state_type)
-        ]
+        omodel = final_state(read_csv(omodel_file))
+        omodel = omodel[omodel.model == 1]
         omodels.append(omodel[["velocity", "depth"]])
 
     amodel = read_csv(amodel_file)
@@ -743,17 +734,22 @@ def plot_dislocations(config, stage_n, run_n):
     catalog_fin_file = (
         Path("outputs/stage_04") / f"run_{run_n:02d}" / "relocated.csv"
     )
+    # Final positions are compared with the unperturbed reference inversion
+    # (same model and station delays); perturbations with the input positions.
+    catalog_ref_file = Path("outputs/stage_04") / "run_00" / "relocated.csv"
 
     cat_ini = read_csv(catalog_ini_file)
     cat_prt = read_csv(catalog_prt_file)
     cat_fin = read_csv(catalog_fin_file)
+    cat_ref = read_csv(catalog_ref_file)
 
     # Rows are compared by position, so VELEST must have returned every
     # event in the same order.
-    if not (len(cat_ini) == len(cat_prt) == len(cat_fin)):
+    if not (len(cat_ini) == len(cat_prt) == len(cat_fin) == len(cat_ref)):
         raise ValueError(
             f"stage_04 run {run_n}: {len(cat_ini)} selected, {len(cat_prt)} "
-            f"perturbed and {len(cat_fin)} relocated events; cannot compare"
+            f"perturbed, {len(cat_fin)} relocated and {len(cat_ref)} "
+            "reference events; cannot compare"
         )
 
     delta = [
@@ -768,7 +764,7 @@ def plot_dislocations(config, stage_n, run_n):
     components = ["lat", "lon", "dep"]
 
     dis_prt = cat_prt[components] - cat_ini[components]
-    dis_fin = cat_fin[components] - cat_ini[components]
+    dis_fin = cat_fin[components] - cat_ref[components]
     # Longitude differences in km shrink with cos(latitude); d2k() below
     # converts degrees of a great circle.
     lon_scale = cos(radians(cat_ini["lat"]))
@@ -890,7 +886,7 @@ def plot_dislocations(config, stage_n, run_n):
             alpha=0.7,
             edgecolor="k",
             color="#4C78A8",
-            label="Initial → Final" if j == 0 else None,
+            label="Reference → Final" if j == 0 else None,
         )
 
         ax.text(

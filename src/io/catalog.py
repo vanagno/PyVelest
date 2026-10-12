@@ -15,7 +15,7 @@ from obspy.core.event import (
 )
 
 from obspy import read_events
-from pandas import DataFrame, read_csv
+from pandas import DataFrame, read_csv, to_numeric
 from src.io.select3D import select_events_3d
 from datetime import timezone
 from obspy.geodetics.base import gps2dist_azimuth as gps
@@ -54,6 +54,7 @@ def pick_weight(pick, arrival, pick_weights=None, use_pick_time_errors=False):
     probability = getattr(arrival, "time_weight", None)
     if (
         pick_weights is not None
+        and pick_weights.enabled
         and probability is not None
         and 0.0 <= probability <= 1.0
     ):
@@ -178,9 +179,12 @@ def summarize_catalog(config):
         phase_info = get_picks_info(
             event, eid, station_info, config.PICK_WEIGHTS
         )
+        # Stations with at least one usable pick (class 4 is dropped from
+        # simultaneous inversions) define nst and the azimuthal gap.
         picked = {}
         for phase in phase_info:
-            picked[phase["sta"]] = phase["azm"]
+            if int(phase["wet"]) < 4:
+                picked[phase["sta"]] = phase["azm"]
 
         ort = po.time
         lat = po.latitude
@@ -225,10 +229,11 @@ def select(
 
     # process
     df = read_csv(catalog_sum_file)
+    # Events in ``catalog`` are in ascending eid order, including events
+    # VELEST could not locate (no origin time; make_catalog keeps a
+    # placeholder for them), so take the eids before dropping those.
+    all_eids = sorted(df["eid"].dropna().astype(int).unique())
     df.dropna(subset=["ort"], inplace=True)
-
-    # Events in ``catalog`` are in ascending eid order.
-    all_eids = sorted(df["eid"].astype(int).unique())
     if len(all_eids) != len(catalog):
         raise ValueError(
             f"{catalog_sum_file} lists {len(all_eids)} events but the "
@@ -254,6 +259,7 @@ def select(
     limits = (
         ("erh", config.EVENT_SELECTION.max_horizontal_error_km, "le"),
         ("erz", config.EVENT_SELECTION.max_depth_error_km, "le"),
+        ("erz", config.EVENT_SELECTION.min_depth_error_km, "ge"),
         ("rms", config.EVENT_SELECTION.max_rms_sec, "le"),
         ("gap", config.EVENT_SELECTION.max_gap_deg, "le"),
         ("nst", config.EVENT_SELECTION.min_used_stations, "ge"),
@@ -379,6 +385,8 @@ def catalog_to_cnv(
     cnv_outfile,
     pick_weights=None,
     use_pick_time_errors=False,
+    unconstrained_depth_below_km=None,
+    start_depth_km=10.0,
 ):
     """
     Convert an ObsPy Catalog to VELEST CNV format.
@@ -428,6 +436,12 @@ def catalog_to_cnv(
             ew = "E" if origin.longitude >= 0 else "W"
 
             depth = origin.depth / 1000.0 if origin.depth else 0.0
+            # Unconstrained (e.g. pinned 0 km) depths: start VELEST deeper.
+            if (
+                unconstrained_depth_below_km is not None
+                and depth < unconstrained_depth_below_km
+            ):
+                depth = start_depth_km
 
             # -------------------------
             # Event header
@@ -541,7 +555,7 @@ def add_statistics(line, header):
 
 
 def add_phase_info(line):
-    sta = line[2:6]
+    sta = line[2:6].strip()
     dis = float(line[7:11])
     azm = float(line[12:15])
     pha = line[21:23].strip()
@@ -588,19 +602,35 @@ def summarize_single_events(single_events_file, sum_outfile):
             elif "STN  DIST" in line:
                 line = next(f)
                 line = next(f)
+                previous = None
                 while line.strip() and "$$$" not in line:
                     info = add_phase_info(line)
                     info.update({"eid": eid})
+                    # An S printed below the P of the same station is a
+                    # continuation card whose DIST/AZM columns hold AMX/PRX.
+                    if (
+                        previous is not None
+                        and info["pha"].startswith("S")
+                        and previous["sta"] == info["sta"]
+                        and previous["pha"].startswith("P")
+                    ):
+                        info["dis"] = previous["dis"]
+                        info["azm"] = previous["azm"]
+                    previous = info
                     phases.append(info)
                     line = next(f)
                     if "$$$" in line:
                         phases.append(header)
                         events_df.extend(phases)
     events_df = DataFrame(events_df)
-    # nst = number of stations with phases listed for the event, as in
+    # nst = number of stations with a usable (class < 4) phase, as in
     # summarize_catalog (VELEST's own NO column, kept as nobs, counts phases).
     if "sta" in events_df and "ort" in events_df:
-        n_sta = events_df.dropna(subset=["sta"]).groupby("eid")["sta"].nunique()
+        usable = events_df.dropna(subset=["sta"])
+        usable = usable[
+            to_numeric(usable["wet"], errors="coerce").fillna(4) < 4
+        ]
+        n_sta = usable.groupby("eid")["sta"].nunique()
         is_header = events_df["ort"].notna()
         events_df.loc[is_header, "nst"] = (
             events_df.loc[is_header, "eid"].map(n_sta).fillna(0)
@@ -712,13 +742,16 @@ def perturb_catalog(
 
     rng = random.default_rng(seed + run_n)
 
+    # run 0 is the unperturbed reference run
+    scale = 0.0 if run_n == 0 else 1.0
     nEvt = len(cat_csv)
-    cat_csv["lat"] += rng.normal(0, lat_std, size=nEvt)
-    cat_csv["lon"] += rng.normal(0, lon_std, size=nEvt)
-    cat_csv["dep"] += rng.normal(0, dep_std, size=nEvt)
+    cat_csv["lat"] += scale * rng.normal(0, lat_std, size=nEvt)
+    cat_csv["lon"] += scale * rng.normal(0, lon_std, size=nEvt)
+    cat_csv["dep"] += scale * rng.normal(0, dep_std, size=nEvt)
 
-    # Ensure all depths are positive
-    cat_csv["dep"] = cat_csv["dep"].clip(lower=0)
+    # Reflect depths perturbed above the surface: clipping them to exactly
+    # 0 km would start VELEST at the free surface, where they tend to stay.
+    cat_csv["dep"] = cat_csv["dep"].abs()
 
     with open(cat_cnv_file) as fo, open(cnv_outfile, "w") as go:
         eid = 0
@@ -769,6 +802,10 @@ def prepare_catalog(config, cat_inp=None, stage_n=1, run_n=None):
             root,
             select_cnv_outfile,
             config.PICK_WEIGHTS,
+            unconstrained_depth_below_km=(
+                config.INPUTS.unconstrained_depth_below_km
+            ),
+            start_depth_km=config.INPUTS.start_depth_km,
         )
 
     elif stage_n == 2:
@@ -783,6 +820,10 @@ def prepare_catalog(config, cat_inp=None, stage_n=1, run_n=None):
             root_out,
             original_cnv_outfile,
             config.PICK_WEIGHTS,
+            unconstrained_depth_below_km=(
+                config.INPUTS.unconstrained_depth_below_km
+            ),
+            start_depth_km=config.INPUTS.start_depth_km,
         )
         cnv2csv(original_cnv_outfile, csv_outfile)
 
@@ -828,5 +869,9 @@ def prepare_catalog(config, cat_inp=None, stage_n=1, run_n=None):
             root_out,
             original_cnv_outfile,
             config.PICK_WEIGHTS,
+            unconstrained_depth_below_km=(
+                config.INPUTS.unconstrained_depth_below_km
+            ),
+            start_depth_km=config.INPUTS.start_depth_km,
         )
         cnv2csv(original_cnv_outfile, csv_outfile)

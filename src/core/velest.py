@@ -56,8 +56,14 @@ def _execute(exe: Path, workdir: Path, single_event: bool = False) -> str | None
         text=True,
     )
     if single_event:
+        # A STOP part-way through the catalogue also exits with code 0 and
+        # leaves a truncated single_events.out: require the normal end.
         product = workdir / "single_events.out"
-        ok = product.exists() and product.stat().st_size > 0
+        ok = (
+            product.exists()
+            and product.stat().st_size > 0
+            and "End of program VELEST" in (result.stdout or "")
+        )
     else:
         product = workdir / "velout.inv"
         ok = product.exists() and "End of program VELEST" in product.read_text(
@@ -127,6 +133,7 @@ def run_velest(config, stage_n, run_n=None):
 
     elif stage_n == 4:
         run_dir = Path("outputs/stage_04") / f"run_{run_n:02d}"
+        (run_dir / "relocated.csv").unlink(missing_ok=True)
         _check(run_dir, _execute_and_parse(_velest_exec(config), run_dir))
         cnv2csv(run_dir / "velout.cnv", run_dir / "relocated.csv")
 

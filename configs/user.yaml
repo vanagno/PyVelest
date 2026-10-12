@@ -2,8 +2,14 @@ INPUTS:
   # Built with tools/prepare_real_inputs.py from the REAL/hypoSA outputs
   catalog: inputs/catalog.pha
   stations: inputs/stations.csv
-  # Built with tools/nd_to_velest.py; see configs/user_ionio.yaml for ionio.nd
+  # Built with tools/nd_to_velest.py from kiratzi87.nd (linear/TauP reading;
+  # vmodel_kiratzi87_step.dat reads the rows as layer tops instead). See
+  # configs/user_ionio.yaml for ionio.nd.
   vmodel: inputs/vmodel_kiratzi87.dat
+  # hypoSA pins unconstrained depths at exactly 0 km; VELEST starts those
+  # events at start_depth_km (a relocation started at 0 km stays shallow)
+  unconstrained_depth_below_km: 0.1
+  start_depth_km: 10.0
 
 # Stations used (all 16 stations of ioan_stations.dat lie inside).
 # Events are selected from the box in EVENT_SELECTION.
@@ -38,10 +44,12 @@ EVENT_SELECTION:
 # Overrides of EVENT_SELECTION for the reselection after the VELEST
 # relocations (stages 2 and 5). VELEST's formal errors are large (median
 # erh ~4 km, erz ~4 km for this network), so these limits rank rather than
-# guarantee location quality.
+# guarantee location quality. Depth errors near 0 mean the hypocentre is
+# stuck on a layer boundary (depth not free): those events are dropped.
 RESELECTION:
-  max_horizontal_error_km: 3.5
-  max_depth_error_km: 4.0
+  max_horizontal_error_km: 4.0
+  max_depth_error_km: 4.5
+  min_depth_error_km: 0.5
   max_rms_sec: 0.3
 
 REFERENCE_STATION:
@@ -51,8 +59,11 @@ REFERENCE_STATION:
   # Leave empty to use the best-scoring station
   code:
 
-# PhaseNet probability -> VELEST weight class 0..4 (class 4 = weight 0)
+# PhaseNet probability (weight column of catalog.pha) -> VELEST weight
+# class 0..4. Class 4 is dropped from the simultaneous inversions and gets
+# a weight of 1/256 in the single-event relocations (stages 2 and 5).
 PICK_WEIGHTS:
+  enabled: true
   probability_thresholds: [0.85, 0.70, 0.55, 0.40]
 
 SYNTHETIC_MODELS:
@@ -101,8 +112,8 @@ FIGURE_SETTINGS:
   max_vel_depth: 45.0
 
 GLOBAL_SETTINGS:
-  # Deletes everything under outputs/ and figures/ at start-up. Set to false
-  # only to re-run single stages with --stages.
+  # Deletes everything under outputs/ and figures/ at start-up of a run
+  # that includes stage 1 (runs with --stages 2..5 keep earlier outputs).
   clean_workspace: true
   # VELEST runs executed in parallel in stages 1 and 3
   n_jobs: 4

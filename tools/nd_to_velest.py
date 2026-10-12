@@ -1,9 +1,11 @@
 """Convert the crust of a TauP ``.nd`` model into a VELEST starting model.
 
-The crustal rows (everything before the ``mantle`` line) are read as layer
-tops: the velocity on a row holds down to the depth of the next row. Each
-thin VELEST layer gets the thickness-weighted average of that profile, so
-the layer averages of the source model are preserved. Optionally the
+The crustal rows (everything before the ``mantle`` line) define a velocity
+profile. With ``--interp linear`` (default, TauP's own semantics) velocity
+varies linearly between consecutive rows and a discontinuity is two rows at
+the same depth; with ``--interp step`` each row is the top of a
+constant-velocity layer. Each thin VELEST layer gets the thickness-weighted
+average of that profile, so the averages of the source model are preserved. Optionally the
 profile is smoothed (running mean over ``--smooth`` layers), because
 PyVelest's random-model generator perturbs velocity *increments* and is
 biased for step-like models. Velocities are then forced to increase by at
@@ -43,8 +45,16 @@ def read_nd_crust(path):
     return rows
 
 
-def layer_average(rows, top, bottom, column=1):
-    """Thickness-weighted average of the layered profile in [top, bottom]."""
+def layer_average(rows, top, bottom, column=1, interp="linear"):
+    """Thickness-weighted average of the profile in [top, bottom].
+
+    Outside the listed depths the first/last value holds.
+    """
+    if interp == "linear":
+        z = np.linspace(top, bottom, 2001)
+        depths = [r[0] for r in rows]
+        values = [r[column] for r in rows]
+        return float(np.interp(z, depths, values).mean())
     depths = [r[0] for r in rows] + [np.inf]
     total = weighted = 0.0
     for i, row in enumerate(rows):
@@ -55,11 +65,15 @@ def layer_average(rows, top, bottom, column=1):
     return weighted / total
 
 
-def build_model(rows, tops, moho, smooth=0, min_increment=0.02):
+def build_model(
+    rows, tops, moho, smooth=0, min_increment=0.02, interp="linear"
+):
     velocities = []
     for i, top in enumerate(tops):
         bottom = tops[i + 1] if i + 1 < len(tops) else moho
-        velocities.append(layer_average(rows, max(top, rows[0][0]), bottom))
+        velocities.append(
+            layer_average(rows, max(top, rows[0][0]), bottom, interp=interp)
+        )
     v = np.asarray(velocities)
     if smooth > 1:
         padded = np.pad(v, (smooth // 2, smooth // 2), mode="edge")
@@ -96,6 +110,12 @@ def main():
     parser.add_argument("--moho", type=float, required=True)
     parser.add_argument("--vmoho", type=float, default=8.0)
     parser.add_argument("--smooth", type=int, default=0)
+    parser.add_argument(
+        "--interp",
+        choices=["linear", "step"],
+        default="linear",
+        help="linear: TauP .nd semantics (default); step: rows are layer tops",
+    )
     parser.add_argument("--min-increment", type=float, default=0.02)
     parser.add_argument("--damping", nargs=3, type=float, default=[50, 1, 10])
     parser.add_argument("--name")
@@ -106,7 +126,9 @@ def main():
     if tops[-1] >= args.moho:
         raise ValueError("--moho must be deeper than the last layer top")
     rows = read_nd_crust(args.nd)
-    vels = build_model(rows, tops, args.moho, args.smooth, args.min_increment)
+    vels = build_model(
+        rows, tops, args.moho, args.smooth, args.min_increment, args.interp
+    )
     if vels[-1] >= args.vmoho:
         raise ValueError("--vmoho must exceed the deepest crustal velocity")
     name = args.name or Path(args.nd).stem.upper()

@@ -1,7 +1,11 @@
 from pathlib import Path
 
 
-def prepare_workspace(config):
+def prepare_workspace(config, clean=None):
+    """Create the output folders; delete old outputs if ``clean`` (default:
+    GLOBAL_SETTINGS.clean_workspace)."""
+    if clean is None:
+        clean = config.GLOBAL_SETTINGS.clean_workspace
 
     outputs = Path("outputs")
     outputs.mkdir(parents=True, exist_ok=True)
@@ -35,7 +39,8 @@ def prepare_workspace(config):
                     model_dir.mkdir(parents=True, exist_ok=True)
 
         if directory in ["stage_04"]:
-            for n_run in range(1, config.STAGE_04.n_runs + 1):
+            # run_00 is the unperturbed reference run
+            for n_run in range(0, config.STAGE_04.n_runs + 1):
                 run_dir = target / f"run_{n_run:02d}"
                 run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -43,7 +48,7 @@ def prepare_workspace(config):
     figures = Path("figures")
     figures.mkdir(parents=True, exist_ok=True)
 
-    if config.GLOBAL_SETTINGS.clean_workspace:
+    if clean:
         for folder in [outputs, figures]:
             for item in folder.rglob("*"):
                 if item.is_file() and item.exists():
