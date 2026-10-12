@@ -1,7 +1,11 @@
 from src.model.Models import VELEST_CONFIG
 from pathlib import Path
 from pandas import read_csv
+import os
 import yaml
+
+# VELEST reads file names into CHARACTER*80 variables.
+MAX_VELEST_PATH = 80
 
 
 def _bool(x: bool) -> int:
@@ -9,7 +13,27 @@ def _bool(x: bool) -> int:
     return int(bool(x))
 
 
+def _path(value, workdir: Path) -> str:
+    """File name as VELEST must see it when it runs inside ``workdir``.
+
+    Paths in the YAML files and in this module are relative to the repo
+    root; VELEST is started with ``cwd=workdir``, so they are rewritten
+    relative to that directory. Empty values stay empty.
+    """
+    if value is None or str(value).strip() == "":
+        return ""
+    name = os.path.relpath(Path(value), workdir)
+    if len(name) > MAX_VELEST_PATH:
+        raise ValueError(
+            f"VELEST file name longer than {MAX_VELEST_PATH} characters: {name}"
+        )
+    return name
+
+
 def write_cmn(config: VELEST_CONFIG, outfile: Path):
+    """Write ``velest.cmn``; VELEST must later run in ``outfile.parent``."""
+
+    workdir = Path(outfile).parent
 
     lines = []
 
@@ -54,7 +78,7 @@ def write_cmn(config: VELEST_CONFIG, outfile: Path):
     inv = config.INVERSION
 
     lines.append(
-        f"{_bool(inv.single_event)} " f"{_bool(inv.compute_resolution)}"
+        f"{_bool(inv.single_event)} " f"{_bool(inv.resolution_matrix)}"
     )
 
     # ------------------------------------------------------------------
@@ -65,7 +89,7 @@ def write_cmn(config: VELEST_CONFIG, outfile: Path):
 
     lines.append(
         f"{m.maximum_distance:.2f} "
-        f"{_bool(m.use_topography)} "
+        f"{_bool(m.topography)} "
         f"{m.minimum_depth:.2f} "
         f"{m.velocity_adjustment:.2f} "
         f"{m.depth_adjustment:.2f} "
@@ -107,7 +131,7 @@ def write_cmn(config: VELEST_CONFIG, outfile: Path):
 
     lines.append(
         f"{_bool(s.invert_station_corrections)} "
-        f"{_bool(s.use_shot_corrections)} "
+        f"{_bool(s.shot_corrections)} "
         f"{_bool(s.fix_shot_corrections)} "
         f"{_bool(s.use_station_elevation)} "
         f"{_bool(s.use_station_corrections)}"
@@ -123,7 +147,7 @@ def write_cmn(config: VELEST_CONFIG, outfile: Path):
         f"{_bool(o.turbo_mode)} "
         f"{_bool(o.write_cnv)} "
         f"{_bool(o.write_station_file)} "
-        f"{_bool(o.write_summary_file)}"
+        f"{_bool(o.write_summary_cards)}"
     )
 
     # ------------------------------------------------------------------
@@ -135,7 +159,7 @@ def write_cmn(config: VELEST_CONFIG, outfile: Path):
     lines.append(
         f"{_bool(d.raypaths)} "
         f"{_bool(d.derivatives)} "
-        f"{_bool(d.averaging_kernel)} "
+        f"{_bool(d.ale)} "
         f"{_bool(d.dirichlet_spread)} "
         f"{_bool(d.reflection_points)} "
         f"{_bool(d.refraction_points)} "
@@ -192,16 +216,17 @@ def write_cmn(config: VELEST_CONFIG, outfile: Path):
     inp = config.INPUT_FILE
 
     lines.extend(
-        [
-            str(inp.velocity_model),
-            str(inp.stations),
-            str(inp.seismo),
-            str(inp.region_names),
-            str(inp.region_coordinates),
-            str(inp.topography_primary),
-            str(inp.topography_secondary),
-            str(inp.earthquakes),
-            str(inp.shots),
+        _path(v, workdir)
+        for v in [
+            inp.velocity_model,
+            inp.stations,
+            inp.seismo,
+            inp.region_names,
+            inp.region_coordinates,
+            inp.topography_primary,
+            inp.topography_secondary,
+            inp.earthquakes,
+            inp.shots,
         ]
     )
 
@@ -212,19 +237,20 @@ def write_cmn(config: VELEST_CONFIG, outfile: Path):
     out = config.OUTPUT_FILE
 
     lines.extend(
-        [
-            str(out.main_output),
-            str(out.single_event_locations),
-            str(out.cnv_output),
-            str(out.station_output),
-            str(out.summary_output),
-            str(out.ray_output),
-            str(out.derivative_output),
-            str(out.averaging_kernel_output),
-            str(out.dirichlet_output),
-            str(out.reflection_output),
-            str(out.refraction_output),
-            str(out.residual_output),
+        _path(v, workdir)
+        for v in [
+            out.main_output,
+            out.single_event_locations,
+            out.cnv_output,
+            out.station_output,
+            out.summary_output,
+            out.ray_output,
+            out.derivative_output,
+            out.averaging_kernel_output,
+            out.dirichlet_output,
+            out.reflection_output,
+            out.refraction_output,
+            out.residual_output,
         ]
     )
 

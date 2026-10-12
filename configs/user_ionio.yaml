@@ -1,0 +1,108 @@
+INPUTS:
+  # Built with tools/prepare_real_inputs.py from the REAL/hypoSA outputs
+  catalog: inputs/catalog.pha
+  stations: inputs/stations.csv
+  # Built with tools/nd_to_velest.py from ionio.nd
+  vmodel: inputs/vmodel_ionio.dat
+
+# Stations used (all 16 stations of ioan_stations.dat lie inside).
+# Events are selected from the box in EVENT_SELECTION.
+STUDY_AREA:
+  min_lat: 38.50
+  max_lat: 41.00
+  min_lon: 19.00
+  max_lon: 22.00
+  lat_hemisphere: N
+  lon_hemisphere: E
+
+EVENT_SELECTION:
+  # Target area
+  min_lat: 39.50
+  max_lat: 39.80
+  min_lon: 20.40
+  max_lon: 20.80
+  # hypoSA pins unconstrained depths at exactly 0 km; leave those out
+  min_depth_km: 0.1
+  max_events: 500
+  cell_count_lat: 6
+  cell_count_lon: 6
+  cell_count_depth: 6
+  # Applied to the input catalog (stage 1). hypoSA gives no location
+  # errors and its RMS (kiratzi87 model, no station delays) is high.
+  max_horizontal_error_km:
+  max_depth_error_km:
+  max_rms_sec: 0.5
+  max_gap_deg: 180
+  min_used_stations: 8
+
+# Overrides of EVENT_SELECTION for the reselection after the VELEST
+# relocations (stages 2 and 5). VELEST's formal errors are large (median
+# erh ~4 km, erz ~4 km for this network), so these limits rank rather than
+# guarantee location quality.
+RESELECTION:
+  max_horizontal_error_km: 3.5
+  max_depth_error_km: 4.0
+  max_rms_sec: 0.3
+
+REFERENCE_STATION:
+  phase_count_weight: 0.45
+  residual_weight: 0.35
+  distance_weight: 0.20
+  # Leave empty to use the best-scoring station
+  code:
+
+# PhaseNet probability -> VELEST weight class 0..4 (class 4 = weight 0)
+PICK_WEIGHTS:
+  probability_thresholds: [0.85, 0.70, 0.55, 0.40]
+
+SYNTHETIC_MODELS:
+  n_models: 50
+  # 0.05 keeps the bias of the random-model generator small for these
+  # fairly flat crustal models (see docs/ioannina_workflow.md)
+  velocity_std: 0.05
+  depth_std: 0.5
+  seed: 1
+  merging_threshold_km_s: 0.15
+  first_layer_dmp: 50
+  last_layer_dmp: 10
+
+STAGE_01:
+  n_runs: 5
+
+STAGE_02:
+  n_runs: 5
+
+STAGE_03:
+  n_runs: 5
+  n_models: 25
+
+STAGE_04:
+  n_runs: 5
+  dx_km: 5.0
+  dy_km: 5.0
+  dz_km: 5.0
+  seed: 1
+
+REPORT_SETTINGS:
+  report_on: false
+
+FIGURE_SETTINGS:
+  # Seismicity map
+  min_sei_lat: 39.50
+  max_sei_lat: 39.80
+  min_sei_lon: 20.40
+  max_sei_lon: 20.80
+  min_sei_depth: 0.0
+  max_sei_depth: 25.0
+  # Velocity maps
+  min_vel_vp: 3.0
+  max_vel_vp: 8.5
+  min_vel_depth: 0.0
+  max_vel_depth: 45.0
+
+GLOBAL_SETTINGS:
+  # Deletes everything under outputs/ and figures/ at start-up. Set to false
+  # only to re-run single stages with --stages.
+  clean_workspace: true
+  # VELEST runs executed in parallel in stages 1 and 3
+  n_jobs: 4

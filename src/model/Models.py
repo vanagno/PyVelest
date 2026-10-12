@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Optional
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pathlib import Path
 from numpy import random, asarray, all, diff, any, empty, cumsum, sum, isclose
 
@@ -17,7 +17,8 @@ class INPUTS_(BaseModel):
 
 
 class STUDY_AREA_(BaseModel):
-    """Geographic bounds for events retained in a study."""
+    """Geographic bounds of the stations used (and of the events, unless
+    EVENT_SELECTION defines its own box)."""
 
     min_lat: float = Field(ge=-90.0, le=90.0)
     max_lat: float = Field(ge=-90.0, le=90.0)
@@ -46,6 +47,13 @@ class STUDY_AREA_(BaseModel):
 class EVENT_SELECTION_(BaseModel):
     """Quality thresholds used to select catalog events."""
 
+    # Optional event box; any bound left out falls back to STUDY_AREA.
+    min_lat: Optional[float] = Field(default=None, ge=-90.0, le=90.0)
+    max_lat: Optional[float] = Field(default=None, ge=-90.0, le=90.0)
+    min_lon: Optional[float] = Field(default=None, ge=-180.0, le=180.0)
+    max_lon: Optional[float] = Field(default=None, ge=-180.0, le=180.0)
+    min_depth_km: Optional[float] = None
+    max_depth_km: Optional[float] = None
     max_events: Optional[int] = Field(default=100, ge=1)
     cell_count_lat: int = Field(default=4, ge=1)
     cell_count_lon: int = Field(default=4, ge=1)
@@ -57,12 +65,62 @@ class EVENT_SELECTION_(BaseModel):
     min_used_stations: Optional[int] = Field(default=None, ge=0)
 
 
+class RESELECTION_(BaseModel):
+    """Optional overrides of EVENT_SELECTION for the reselection of events
+    after the VELEST relocations of stages 2 and 5. Values left empty keep
+    the EVENT_SELECTION value."""
+
+    max_horizontal_error_km: Optional[float] = Field(default=None, ge=0.0)
+    max_depth_error_km: Optional[float] = Field(default=None, ge=0.0)
+    max_rms_sec: Optional[float] = Field(default=None, ge=0.0)
+    max_gap_deg: Optional[float] = Field(default=None, ge=0.0)
+    min_used_stations: Optional[int] = Field(default=None, ge=0)
+    min_depth_km: Optional[float] = None
+    max_depth_km: Optional[float] = None
+    max_events: Optional[int] = Field(default=None, ge=1)
+
+    def apply(self, selection: "EVENT_SELECTION_") -> "EVENT_SELECTION_":
+        overrides = {
+            k: v for k, v in self.model_dump().items() if v is not None
+        }
+        return selection.model_copy(update=overrides)
+
+
 class REFERENCE_STATION_(BaseModel):
     """Weights used to rank candidate reference stations."""
 
     phase_count_weight: float = Field(default=0.45, ge=0.0)
     residual_weight: float = Field(default=0.35, ge=0.0)
     distance_weight: float = Field(default=0.20, ge=0.0)
+    # Force this station to be the reference (highest ICC) instead of the
+    # best-scoring one.
+    code: Optional[str] = None
+
+
+class PICK_WEIGHTS_(BaseModel):
+    """Mapping of pick probabilities (0-1, e.g. PhaseNet) to VELEST weight
+    classes 0-4. A pick with probability >= thresholds[i] gets class i;
+    anything below the last threshold gets class 4 (weight 0)."""
+
+    probability_thresholds: list[float] = Field(
+        default_factory=lambda: [0.85, 0.70, 0.55, 0.40],
+        min_length=4,
+        max_length=4,
+    )
+
+    @model_validator(mode="after")
+    def validate_thresholds(self) -> "PICK_WEIGHTS_":
+        t = self.probability_thresholds
+        # (numpy's any/all are imported in this module; avoid them here)
+        if t != sorted(set(t), reverse=True):
+            raise ValueError("probability_thresholds must be decreasing")
+        return self
+
+    def weight_class(self, probability: float) -> int:
+        for i, threshold in enumerate(self.probability_thresholds):
+            if probability >= threshold:
+                return i
+        return 4
 
 
 class SYNTHETIC_MODELS_(BaseModel):
@@ -131,6 +189,10 @@ class GLOBAL_SETTINGS_(BaseModel):
     """Settings for global"""
 
     clean_workspace: bool = Field(default=True)
+    # Number of VELEST runs executed in parallel (stages 1 and 3).
+    n_jobs: int = Field(default=1, ge=1)
+    # VELEST executable (see src/exc/build_velest.sh to compile one)
+    velest_exec: str = Field(default="src/exc/velest")
 
 
 class USER_CONFIG(BaseModel):
@@ -139,7 +201,9 @@ class USER_CONFIG(BaseModel):
     INPUTS: INPUTS_
     STUDY_AREA: STUDY_AREA_
     EVENT_SELECTION: EVENT_SELECTION_
+    RESELECTION: RESELECTION_ = Field(default_factory=RESELECTION_)
     REFERENCE_STATION: REFERENCE_STATION_
+    PICK_WEIGHTS: PICK_WEIGHTS_ = Field(default_factory=PICK_WEIGHTS_)
     SYNTHETIC_MODELS: SYNTHETIC_MODELS_
     STAGE_01: STAGE_01_
     STAGE_02: STAGE_02_
@@ -608,6 +672,8 @@ class STATIONS(BaseModel):
 
 
 class COORDINATE_SYSTEM_(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     origin_latitude: float = Field(ge=-90.0, le=90.0)  # olat
     origin_longitude: float = Field(ge=-180.0, le=180.0)  # olon
     system: int = Field(ge=0, le=2)  # icoordsystem
@@ -623,6 +689,8 @@ class COORDINATE_SYSTEM_(BaseModel):
 
 
 class DATASET_(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     number_of_earthquakes: Optional[int]  # neqs
     number_of_shots: Optional[int]  # nshot
     rotation: Optional[float] = Field(default=0.0, ge=0.0)  # rotate
@@ -634,8 +702,10 @@ class DATASET_(BaseModel):
 
 
 class INVERSION_(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     single_event: bool = False  # isingle
-    compute_resolution: bool = False  # iresolcalc
+    resolution_matrix: bool = False  # iresolcalc
 
 
 # =============================================================================
@@ -644,8 +714,10 @@ class INVERSION_(BaseModel):
 
 
 class RELOCATION_(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     maximum_distance: float = Field(ge=0, le=1000)  # dmax
-    use_topography: bool = False  # itopo
+    topography: bool = False  # itopo
     minimum_depth: float = Field(ge=-5.0, le=50.0)  # zmininput
     velocity_adjustment: float = Field(ge=0.0, le=2.0)  # veladj
     depth_adjustment: float = Field(ge=0.0, le=5.0)  # zadj
@@ -658,6 +730,8 @@ class RELOCATION_(BaseModel):
 
 
 class VELOCITY_(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     phase_mode: int = Field(ge=1, le=3)  # nsp
     s_weight_factor: float = 1.0  # swtfac
     vp_vs_ratio: float = 1.73  # vpvs
@@ -670,6 +744,8 @@ class VELOCITY_(BaseModel):
 
 
 class DAMPING_(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     origin_time: float = Field(ge=0.01, le=100)  # othet
     hypocenter_xy: float = Field(ge=0.01, le=100)  # xythet
     hypocenter_depth: float = Field(ge=0.01, le=100)  # zthet
@@ -683,8 +759,10 @@ class DAMPING_(BaseModel):
 
 
 class STATION_CORRECTION_(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     invert_station_corrections: bool = True  # nsinv
-    use_shot_corrections: bool = False  # nshcor
+    shot_corrections: bool = False  # nshcor
     fix_shot_corrections: bool = False  # nshfix
     use_station_elevation: bool = True  # iuseelev
     use_station_corrections: bool = True  # iusestacorr
@@ -696,10 +774,12 @@ class STATION_CORRECTION_(BaseModel):
 
 
 class OUTPUT_SWITCH_(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     turbo_mode: bool = False  # iturbo
     write_cnv: bool = True  # icnvout
     write_station_file: bool = True  # istaout
-    write_summary_file: bool = False  # ismpout
+    write_summary_cards: bool = False  # ismpout
 
 
 # =============================================================================
@@ -708,9 +788,11 @@ class OUTPUT_SWITCH_(BaseModel):
 
 
 class DIAGNOSTIC_(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     raypaths: bool = False  # irayout
     derivatives: bool = False  # idrvout
-    averaging_kernel: bool = False  # ialeout
+    ale: bool = False  # ialeout
     dirichlet_spread: bool = False  # idspout
     reflection_points: bool = False  # irflout
     refraction_points: bool = False  # irfrout
@@ -723,6 +805,8 @@ class DIAGNOSTIC_(BaseModel):
 
 
 class ITERATION_(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     minimum_rms_change: float = Field(ge=0.001, le=10.0)  # delmin
     maximum_iterations: int = Field(ge=1, le=100)  # ittmax
     invert_ratio_every: int = Field(ge=0, le=1000)  # inverterratio
@@ -734,6 +818,8 @@ class ITERATION_(BaseModel):
 
 
 class QUALITY_CLASS_(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     mode: int = 0
     class0: int = 0
     class1: int = 1
@@ -749,6 +835,8 @@ class QUALITY_CLASS_(BaseModel):
 
 
 class QUALITY_FACTOR_(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     mode: int = 0
     class0: float = 1.00
     class1: float = 0.50
@@ -763,6 +851,8 @@ class QUALITY_FACTOR_(BaseModel):
 
 
 class INPUT_FILE_(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     velocity_model: Optional[Path] | str
     stations: Optional[Path] | str
     seismo: Optional[Path] | str
@@ -780,6 +870,8 @@ class INPUT_FILE_(BaseModel):
 
 
 class OUTPUT_FILE_(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     main_output: Optional[Path] | str
     single_event_locations: Optional[Path] | str
     cnv_output: Optional[Path] | str
@@ -800,6 +892,8 @@ class OUTPUT_FILE_(BaseModel):
 
 
 class VELEST_CONFIG(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     TITLE: str = "VELEST inversion"
     COORDINATE_SYSTEM: COORDINATE_SYSTEM_ = Field(
         default_factory=COORDINATE_SYSTEM_

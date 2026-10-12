@@ -17,10 +17,11 @@ TITLE: "VELEST Inversion Configuration Parameters"
 COORDINATE_SYSTEM:
 
   # * Latitude of local Cartesian origin (decimal degrees)
-  origin_latitude: 38.25
+  origin_latitude: 39.65
 
   # * Longitude of local Cartesian origin (decimal degrees)
-  origin_longitude: -46.75
+  #   VELEST convention: West is POSITIVE, East is NEGATIVE (20.60E -> -20.60)
+  origin_longitude: -20.60
 
   # * Coordinate system
   # 0 = local Cartesian (short-distance conversion)
@@ -79,7 +80,7 @@ INVERSION:
 RELOCATION:
 
   # * Maximum epicentral distance (km)
-  maximum_distance: 500.0
+  maximum_distance: 150.0
 
   # * Apply topography correction
   topography: false
@@ -105,13 +106,13 @@ VELOCITY:
   # * 1 = P only
   # * 2 = independent P and S models
   # * 3 = S derived using VP/VS
-  phase_mode: 1
+  phase_mode: 3
 
   # * S-wave weighting factor
   s_weight_factor: 1.0
 
   # * VP / VS ratio
-  vp_vs_ratio: 1.75
+  vp_vs_ratio: 1.82
 
   # * Number of velocity models
   number_of_models: 1

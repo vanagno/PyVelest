@@ -283,15 +283,16 @@ def calculate_reference_station_scores(
         # P and S observations
         # --------------------------------------------------------
 
-        P = station.loc[
-            station["pha"] == "PG",
-            "res",
-        ].dropna()
+        # Count every P-type (P, Pg, Pn ...) and S-type phase.
+        is_p = station["pha"].str.startswith("P")
+        is_s = station["pha"].str.startswith("S")
 
-        S = station.loc[
-            station["pha"] == "SG",
-            "res",
-        ].dropna()
+        nP = int(is_p.sum())
+        nS = int(is_s.sum())
+        nObs = nP + nS
+
+        P = station.loc[is_p, "res"].dropna()
+        S = station.loc[is_s, "res"].dropna()
 
         # All valid residuals
         residuals = concat(
@@ -301,10 +302,6 @@ def calculate_reference_station_scores(
             ],
             ignore_index=True,
         )
-
-        nP = len(P)
-        nS = len(S)
-        nObs = nP + nS
 
         # --------------------------------------------------------
         # Event coverage
@@ -330,7 +327,7 @@ def calculate_reference_station_scores(
         # Statistics
         # --------------------------------------------------------
 
-        if nObs:
+        if len(residuals):
             median_abs_residual = residuals.median()
             mean_abs_residual = residuals.mean()
             rms_residual = sqrt(mean(residuals.to_numpy() ** 2))
@@ -454,11 +451,18 @@ def finalized_inverted_stations(config, stage_n, run_n):
 
     if stage_n == 1:
         root = Path("outputs/stage_01")
+        n_models = config.SYNTHETIC_MODELS.n_models
     elif stage_n == 3:
-        root = Path("outputs/stage_03")        
-    
+        root = Path("outputs/stage_03")
+        n_models = config.STAGE_03.n_models
+
     run_dir = root / f"run_{run_n:02d}"
-    osta_files = sorted(run_dir.rglob("velout.sta"))
+    # Only this run's models, and only those VELEST finished.
+    osta_files = [
+        run_dir / f"model_{n:02d}" / "velout.sta"
+        for n in range(1, n_models + 1)
+        if (run_dir / f"model_{n:02d}" / "velout.sta").exists()
+    ]
 
     # outputs
     averaged_stafile = run_dir / "summary" / "stations.sta"
@@ -481,8 +485,32 @@ def wrire_station(
     cat_inpfile = Path("inputs/catalog.csv")
     stations_sel = read_station(config, infile)
     select_cat_df = read_csv(cat_inpfile)
-    sorted_station_df = calculate_reference_station_scores(select_cat_df)
+    ref = config.REFERENCE_STATION
+    sorted_station_df = calculate_reference_station_scores(
+        select_cat_df,
+        observation_weight=ref.phase_count_weight,
+        residual_weight=ref.residual_weight,
+        distance_weight=ref.distance_weight,
+    )
     stations_df = sorted_station_df.merge(stations_sel, on="code", how="inner")
+
+    # VELEST holds the P delay of the highest-ICC station fixed: that is the
+    # reference station. Optionally force a user-chosen one.
+    if ref.code:
+        if ref.code not in set(stations_df["code"]):
+            raise ValueError(
+                f"Reference station {ref.code} has no picks or is outside "
+                "STUDY_AREA"
+            )
+        is_ref = stations_df["code"] == ref.code
+        stations_df = concat(
+            [stations_df[is_ref], stations_df[~is_ref]], ignore_index=True
+        )
+    stations_df["icc"] = arange(len(stations_df), 0, -1, dtype=int)
+    print(
+        f"+++ Reference station: {stations_df.iloc[0].code} "
+        f"({len(stations_df)} stations in the station file)"
+    )
     p_delay = 0
     s_delay = 0
     fmt = "(a4,f7.4,a1,1x,f8.4,a1,1x," "i4,1x,i1,1x,i3,1x,f5.2,2x,f5.2,3x,i1)"
@@ -515,8 +543,8 @@ def wrire_station(
             lat_abs = abs(lat)
             lon_abs = abs(lon)
 
-            lat_hemisphere = config.STUDY_AREA.lat_hemisphere
-            lon_hemisphere = config.STUDY_AREA.lon_hemisphere
+            lat_hemisphere = "N" if lat >= 0 else "S"
+            lon_hemisphere = "E" if lon >= 0 else "W"
 
             # One velocity model.
             model = 1
@@ -557,7 +585,7 @@ def prepare_station(config, stage_n, run_n=None):
     if stage_n == 1:
 
         # inputs
-        station_input = Path("inputs") / "stations.csv"
+        station_input = Path(config.INPUTS.stations)
 
         # outputs
         root_dir = Path("outputs/stage_01")

@@ -1,158 +1,135 @@
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from subprocess import run
-from shutil import copy
+
 from src.io.velest import read_velest_inversion
 from src.io.catalog import cnv2csv
 from tqdm import tqdm
 
+# Files VELEST writes; removed before each run so that a failed run can
+# never leave results from an earlier run behind.
+VELEST_OUTPUTS = [
+    "velout.inv",
+    "velout.cnv",
+    "velout.sta",
+    "velout.res",
+    "velout.smp",
+    "velout.ray",
+    "velout.sum",
+    "single_events.out",
+]
+PARSED_OUTPUTS = {
+    "attempts": "attempts.csv",
+    "hypocenter_changes": "hypocenter_changes.csv",
+    "hypocenter_summary": "hypocenter_summary.csv",
+    "velocity_changes": "velocity_changes.csv",
+    # read_velest_inversion's "velocity_states" table (one row per layer,
+    # iteration and state) is what the model averaging reads as
+    # velocity_summary.csv; keep these names for compatibility.
+    "velocity_summary": "velocity_states.csv",
+    "velocity_states": "velocity_summary.csv",
+}
+
+
+def _velest_exec(config) -> Path:
+    exe = Path(config.GLOBAL_SETTINGS.velest_exec).resolve()
+    if not exe.is_file():
+        raise FileNotFoundError(
+            f"VELEST executable not found: {exe} "
+            "(build one with src/exc/build_velest.sh)"
+        )
+    return exe
+
+
+def _execute(exe: Path, workdir: Path, single_event: bool = False) -> str | None:
+    """Run VELEST inside ``workdir`` (which holds ``velest.cmn``).
+
+    Returns None on success, otherwise a short error description.
+    """
+    for name in VELEST_OUTPUTS + list(PARSED_OUTPUTS.values()):
+        (workdir / name).unlink(missing_ok=True)
+
+    result = run(
+        [str(exe)],
+        cwd=workdir,
+        capture_output=True,
+        text=True,
+    )
+    if single_event:
+        product = workdir / "single_events.out"
+        ok = product.exists() and product.stat().st_size > 0
+    else:
+        product = workdir / "velout.inv"
+        ok = product.exists() and "End of program VELEST" in product.read_text(
+            errors="replace"
+        )
+    if result.returncode != 0 or not ok:
+        tail = (result.stderr or result.stdout or "").strip().splitlines()[-3:]
+        return f"exit code {result.returncode}; " + " | ".join(tail)
+    return None
+
+
+def _execute_and_parse(exe: Path, workdir: Path) -> str | None:
+    error = _execute(exe, workdir)
+    if error:
+        return error
+    try:
+        results = read_velest_inversion(workdir / "velout.inv")
+        for key, name in PARSED_OUTPUTS.items():
+            results[key].to_csv(workdir / name, index=False)
+    except Exception as exc:  # parsing problems must not pass silently
+        return f"could not parse velout.inv: {exc}"
+    return None
+
+
+def _run_many(config, workdirs):
+    exe = _velest_exec(config)
+    n_jobs = config.GLOBAL_SETTINGS.n_jobs
+    desc = "+++ Running VELEST ..."
+    with ThreadPoolExecutor(max_workers=n_jobs) as pool:
+        errors = list(
+            tqdm(
+                pool.map(lambda d: _execute_and_parse(exe, d), workdirs),
+                total=len(workdirs),
+                desc=desc,
+            )
+        )
+    failed = [(d, e) for d, e in zip(workdirs, errors) if e]
+    for workdir, error in failed:
+        print(f"!!! VELEST failed in {workdir}: {error}")
+    if len(failed) == len(workdirs):
+        raise RuntimeError("All VELEST runs failed; see messages above.")
+    return failed
+
+
+def _check(workdir, error):
+    if error:
+        raise RuntimeError(f"VELEST failed in {workdir}: {error}")
+
 
 def run_velest(config, stage_n, run_n=None):
-    here = Path()
 
     if stage_n == 1:
-
-        root = Path("outputs/stage_01")
-
-        # outputs
-
-        run_dir = root / f"run_{run_n:02d}"
-
-        # processing
+        run_dir = Path("outputs/stage_01") / f"run_{run_n:02d}"
         n_models = config.SYNTHETIC_MODELS.n_models
-        desc = "+++ Running VELEST ..."
-        for n_model in tqdm(range(1, n_models + 1), total=n_models, desc=desc):
+        workdirs = [run_dir / f"model_{n:02d}" for n in range(1, n_models + 1)]
+        _run_many(config, workdirs)
 
-            model_dir = run_dir / f"model_{n_model:02d}"
-
-            # inputs
-            cmn_inpfile = model_dir / "velest.cmn"
-            inv_inpfile = model_dir / "velout.inv"
-            velest_exec = Path("src/exc") / "velest"
-
-            copy(cmn_inpfile, here)
-            result = run([velest_exec], capture_output=True, text=True)
-
-            if result.stderr == "":
-
-                # outputs
-                atm_outfile = model_dir / "attempts.csv"
-                hyc_outfile = model_dir / "hypocenter_changes.csv"
-                hps_outfile = model_dir / "hypocenter_summary.csv"
-                vec_outfile = model_dir / "velocity_changes.csv"
-                vlst_outfile = model_dir / "velocity_summary.csv"
-                vlsu_outfile = model_dir / "velocity_states.csv"
-
-                results = read_velest_inversion(inv_inpfile)
-
-                results["attempts"].to_csv(atm_outfile, index=False)
-                results["hypocenter_changes"].to_csv(hyc_outfile, index=False)
-                results["hypocenter_summary"].to_csv(hps_outfile, index=False)
-                results["velocity_changes"].to_csv(vec_outfile, index=False)
-                results["velocity_summary"].to_csv(vlsu_outfile, index=False)
-                results["velocity_states"].to_csv(vlst_outfile, index=False)
-
-    if stage_n == 2:
-
-        # outputs
+    elif stage_n == 2:
         root = Path("outputs/stage_02")
+        _check(root, _execute(_velest_exec(config), root, single_event=True))
 
-        # processing
-        cmn_inpfile = root / "velest.cmn"
-        inv_inpfile = root / "velout.inv"
-        velest_exec = Path("src/exc") / "velest"
-
-        copy(cmn_inpfile, here)
-        result = run([velest_exec], capture_output=True, text=True)
-
-    if stage_n == 3:
-
-        root = Path("outputs/stage_03")
-
-        # outputs
-        run_dir = root / f"run_{run_n:02d}"
-
-        # processing
+    elif stage_n == 3:
+        run_dir = Path("outputs/stage_03") / f"run_{run_n:02d}"
         n_models = config.STAGE_03.n_models
-        desc = "+++ Running VELEST ..."
-        for n_model in tqdm(range(1, n_models + 1), total=n_models, desc=desc):
+        workdirs = [run_dir / f"model_{n:02d}" for n in range(1, n_models + 1)]
+        _run_many(config, workdirs)
 
-            model_dir = run_dir / f"model_{n_model:02d}"
+    elif stage_n == 4:
+        run_dir = Path("outputs/stage_04") / f"run_{run_n:02d}"
+        _check(run_dir, _execute_and_parse(_velest_exec(config), run_dir))
+        cnv2csv(run_dir / "velout.cnv", run_dir / "relocated.csv")
 
-            # inputs
-            cmn_inpfile = model_dir / "velest.cmn"
-            inv_inpfile = model_dir / "velout.inv"
-            velest_exec = Path("src/exc") / "velest"
-
-            copy(cmn_inpfile, here)
-            result = run([velest_exec], capture_output=True, text=True)
-
-            if result.stderr == "":
-
-                # outputs
-                atm_outfile = model_dir / "attempts.csv"
-                hyc_outfile = model_dir / "hypocenter_changes.csv"
-                hps_outfile = model_dir / "hypocenter_summary.csv"
-                vec_outfile = model_dir / "velocity_changes.csv"
-                vlst_outfile = model_dir / "velocity_summary.csv"
-                vlsu_outfile = model_dir / "velocity_states.csv"
-
-                results = read_velest_inversion(inv_inpfile)
-
-                results["attempts"].to_csv(atm_outfile, index=False)
-                results["hypocenter_changes"].to_csv(hyc_outfile, index=False)
-                results["hypocenter_summary"].to_csv(hps_outfile, index=False)
-                results["velocity_changes"].to_csv(vec_outfile, index=False)
-                results["velocity_summary"].to_csv(vlsu_outfile, index=False)
-                results["velocity_states"].to_csv(vlst_outfile, index=False)
-
-
-    if stage_n == 4:
-
-        root = Path("outputs/stage_04")
-
-        # outputs
-        run_dir = root / f"run_{run_n:02d}"
-        rel_cnv_outfile = root / f"run_{run_n:02d}" / "velout.cnv"
-        rel_csv_outfile = root / f"run_{run_n:02d}" / "relocated.csv"
-
-        # processing
-        cmn_inpfile = run_dir / "velest.cmn"
-        inv_inpfile = run_dir / "velout.inv"
-        velest_exec = Path("src/exc") / "velest"
-
-        copy(cmn_inpfile, here)
-        result = run([velest_exec], capture_output=True, text=True)
-
-        if result.stderr == "":
-
-            # outputs
-            atm_outfile = run_dir / "attempts.csv"
-            hyc_outfile = run_dir / "hypocenter_changes.csv"
-            hps_outfile = run_dir / "hypocenter_summary.csv"
-            vec_outfile = run_dir / "velocity_changes.csv"
-            vlst_outfile = run_dir / "velocity_summary.csv"
-            vlsu_outfile = run_dir / "velocity_states.csv"
-
-            results = read_velest_inversion(inv_inpfile)
-
-            results["attempts"].to_csv(atm_outfile, index=False)
-            results["hypocenter_changes"].to_csv(hyc_outfile, index=False)
-            results["hypocenter_summary"].to_csv(hps_outfile, index=False)
-            results["velocity_changes"].to_csv(vec_outfile, index=False)
-            results["velocity_summary"].to_csv(vlsu_outfile, index=False)
-            results["velocity_states"].to_csv(vlst_outfile, index=False)
-            
-            cnv2csv(rel_cnv_outfile, rel_csv_outfile)
-
-    if stage_n == 5:
-
-        # outputs
+    elif stage_n == 5:
         root = Path("outputs/stage_05")
-
-        # processing
-        cmn_inpfile = root / "velest.cmn"
-        inv_inpfile = root / "velout.inv"
-        velest_exec = Path("src/exc") / "velest"
-
-        copy(cmn_inpfile, here)
-        result = run([velest_exec], capture_output=True, text=True)            
+        _check(root, _execute(_velest_exec(config), root, single_event=True))

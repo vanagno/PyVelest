@@ -23,35 +23,89 @@ from obspy.geodetics.base import kilometer2degrees as k2d
 from shutil import copy
 
 
-from datetime import datetime as dt
-from math import sqrt
+from datetime import datetime as dt, timedelta
+from math import sqrt, cos, radians
 from numpy import nan, random
+from src.io.station import read_station
 
 import warnings
 
 warnings.filterwarnings("ignore")
 
 
-def get_picks_info(event, eid, station_inpfile=Path("inputs/stations.csv")):
+CATALOG_SUMMARY = Path("inputs/catalog.csv")
+
+
+def pick_weight(pick, arrival, pick_weights=None, use_pick_time_errors=False):
+    """VELEST weight class (0 = best ... 4 = unused) of one pick.
+
+    Priority: a Nordic operator weight; then a pick probability in
+    ``arrival.time_weight`` (0-1, e.g. PhaseNet via a HypoDD phase file),
+    mapped with ``pick_weights``; then, optionally, the pick time
+    uncertainty; otherwise 0.
+    """
+    extra = getattr(pick, "extra", None) or {}
+    if "nordic_pick_weight" in extra:
+        try:
+            return int(extra["nordic_pick_weight"]["value"])
+        except Exception:
+            pass
+
+    probability = getattr(arrival, "time_weight", None)
+    if (
+        pick_weights is not None
+        and probability is not None
+        and 0.0 <= probability <= 1.0
+    ):
+        return pick_weights.weight_class(probability)
+
+    if use_pick_time_errors and pick.time_errors:
+        err = pick.time_errors.uncertainty
+        if err is not None:
+            if err <= 0.05:
+                return 0
+            elif err <= 0.10:
+                return 1
+            elif err <= 0.20:
+                return 2
+            elif err <= 0.50:
+                return 3
+            return 4
+    return 0
+
+
+def azimuthal_gap(azimuths):
+    """Largest azimuthal gap (degrees) between the given azimuths."""
+    azimuths = sorted({round(a % 360.0, 3) for a in azimuths})
+    if len(azimuths) < 2:
+        return 360.0
+    gaps = [b - a for a, b in zip(azimuths, azimuths[1:])]
+    gaps.append(azimuths[0] + 360.0 - azimuths[-1])
+    return max(gaps)
+
+
+def station_coordinates(config):
+    """{code: (lat, lon)} of the stations inside STUDY_AREA."""
+    stations_df = read_station(config, config.INPUTS.stations)
+    return {
+        str(row.code): (row.lat, row.lon)
+        for row in stations_df.itertuples(index=False)
+    }
+
+
+def get_picks_info(event, eid, station_info, pick_weights=None):
     """Extract VELEST-ready pick rows from one ObsPy event.
 
-    Distances are returned in kilometers and travel times in seconds. Picks
-    whose phase or station cannot be resolved are ignored because they cannot
-    be represented reliably in the catalog summary.
+    ``station_info`` maps station code -> (lat, lon). Distances are in
+    kilometers, azimuths are from the event to the station (as in VELEST
+    output) and travel times are in seconds. Picks whose phase or station
+    cannot be resolved are ignored.
     """
     origin = event.preferred_origin()
     if origin is None:
         if not event.origins:
             raise ValueError(f"Event {eid} has no origin")
         origin = event.origins[0]
-
-    stations_df = read_csv(station_inpfile)
-    station_info = {}
-    for row in stations_df.itertuples(index=False):
-        distance_m, azimuth, _ = gps(
-            row.lat, row.lon, origin.latitude, origin.longitude
-        )
-        station_info[row.code] = (distance_m * 1e-3, azimuth)
 
     phases = []
     for arrival in origin.arrivals:
@@ -66,12 +120,11 @@ def get_picks_info(event, eid, station_inpfile=Path("inputs/stations.csv")):
         if sta not in station_info:
             continue
 
-        dist, azimuth = station_info[sta]
-        if "extra" not in pick.__dict__:
-            weight = 0
-        else:
-            weight_info = pick.extra.get("nordic_pick_weight", {"value": 0})
-            weight = weight_info.get("value", 0)
+        distance_m, azimuth, _ = gps(
+            origin.latitude, origin.longitude, *station_info[sta]
+        )
+        dist = distance_m * 1e-3
+        weight = pick_weight(pick, arrival, pick_weights)
         phases.append(
             {
                 "eid": eid,
@@ -87,35 +140,65 @@ def get_picks_info(event, eid, station_inpfile=Path("inputs/stations.csv")):
     return phases
 
 
+def _horizontal_error_km(origin):
+    """Horizontal location error in km, from whatever the reader filled."""
+    ou = origin.origin_uncertainty
+    if ou is not None:
+        for value in (
+            ou.horizontal_uncertainty,
+            ou.max_horizontal_uncertainty,
+        ):
+            if value:
+                return value * 1e-3  # QuakeML stores metres
+    lat_err = getattr(origin.latitude_errors, "uncertainty", None)
+    lon_err = getattr(origin.longitude_errors, "uncertainty", None)
+    if lat_err and lon_err:
+        dy = lat_err * 111.19
+        dx = lon_err * 111.19 * cos(radians(origin.latitude))
+        return sqrt(dx**2 + dy**2)
+    return None
+
+
 def summarize_catalog(config):
 
     # inputs
     cat_inpfile = config.INPUTS.catalog
 
     # outputs
-    cat_outfile = Path("inputs/catalog.csv")
+    cat_outfile = CATALOG_SUMMARY
 
     # processing
     cat = read_events(cat_inpfile)
+    station_info = station_coordinates(config)
     data = []
     for eid, event in enumerate(cat, 1):
-        eid = eid
         po = event.preferred_origin() or event.origins[0]
         pm = event.preferred_magnitude() or None
+        quality = po.quality
+        phase_info = get_picks_info(
+            event, eid, station_info, config.PICK_WEIGHTS
+        )
+        picked = {}
+        for phase in phase_info:
+            picked[phase["sta"]] = phase["azm"]
+
         ort = po.time
         lat = po.latitude
         lon = po.longitude
         dep = po.depth * 1e-3
         mag = pm.mag if pm else None
-        gap = po.quality.azimuthal_gap or None
-        rms = po.quality.standard_error or None
-        nst = po.quality.used_station_count or None
-        erh = (
-            po.origin_uncertainty.horizontal_uncertainty
-            if po.origin_uncertainty
-            else None
+        # Use the catalog's own values when present, otherwise compute
+        # them from the picks at stations inside STUDY_AREA.
+        gap = getattr(quality, "azimuthal_gap", None) or (
+            azimuthal_gap(picked.values()) if picked else None
         )
-        erz = po.depth_errors.uncertainty * 1e-3 if po.depth_errors else None
+        rms = getattr(quality, "standard_error", None) or None
+        nst = getattr(quality, "used_station_count", None) or (
+            len(picked) or None
+        )
+        erh = _horizontal_error_km(po)
+        erz = getattr(po.depth_errors, "uncertainty", None)
+        erz = erz * 1e-3 if erz else None
         event_info = {
             "eid": eid,
             "ort": ort,
@@ -129,7 +212,6 @@ def summarize_catalog(config):
             "erh": erh,
             "erz": erz,
         }
-        phase_info = get_picks_info(event, eid, config.INPUTS.stations)
         phase_info.append(event_info)
         data.extend(phase_info)
     cat_df = DataFrame(data)
@@ -144,9 +226,30 @@ def select(
     # process
     df = read_csv(catalog_sum_file)
     df.dropna(subset=["ort"], inplace=True)
+
+    # Events in ``catalog`` are in ascending eid order.
+    all_eids = sorted(df["eid"].astype(int).unique())
+    if len(all_eids) != len(catalog):
+        raise ValueError(
+            f"{catalog_sum_file} lists {len(all_eids)} events but the "
+            f"catalog has {len(catalog)}"
+        )
+    event_by_eid = dict(zip(all_eids, catalog))
+
+    es, sa = config.EVENT_SELECTION, config.STUDY_AREA
+
+    def bound(value, fallback):
+        return fallback if value is None else value
+
     mask = df["lat"].between(
-        config.STUDY_AREA.min_lat, config.STUDY_AREA.max_lat
-    ) & df["lon"].between(config.STUDY_AREA.min_lon, config.STUDY_AREA.max_lon)
+        bound(es.min_lat, sa.min_lat), bound(es.max_lat, sa.max_lat)
+    ) & df["lon"].between(
+        bound(es.min_lon, sa.min_lon), bound(es.max_lon, sa.max_lon)
+    )
+    if es.min_depth_km is not None:
+        mask &= df["dep"] >= es.min_depth_km
+    if es.max_depth_km is not None:
+        mask &= df["dep"] <= es.max_depth_km
 
     limits = (
         ("erh", config.EVENT_SELECTION.max_horizontal_error_km, "le"),
@@ -164,12 +267,20 @@ def select(
         mask &= comparison | df[column].isna()
 
     filtered = df[mask].copy()
+    if filtered.empty:
+        raise ValueError(
+            f"No event out of {len(df)} passes the EVENT_SELECTION "
+            f"criteria ({catalog_sum_file}); relax the thresholds."
+        )
     selected = select_events_3d(filtered, config)
+    print(
+        f"+++ {len(filtered)} of {len(df)} events pass the selection "
+        f"criteria; {len(selected)} selected"
+    )
     selected.to_csv(select_csv_outfile, index=False, float_format="%.3f")
     cat_sel = Catalog()
     for eid in selected.eid:
-        event = catalog[int(eid)-1]
-        cat_sel.events.append(event)
+        cat_sel.events.append(event_by_eid[int(eid)])
     cat_sel.write(
         select_cat_outfile,
         format="NORDIC",
@@ -266,6 +377,7 @@ def catalog_to_cnv(
     stations_inpfile,
     root_out,
     cnv_outfile,
+    pick_weights=None,
     use_pick_time_errors=False,
 ):
     """
@@ -288,7 +400,6 @@ def catalog_to_cnv(
     # processing
     stations_df = read_csv(stations_inpfile)
     station_codes = set(stations_df["code"].astype(str))
-    default_weight = 0
     unused_st = []
 
     with open(cnv_outfile, "w") as f:
@@ -306,6 +417,7 @@ def catalog_to_cnv(
                 magnitude = event.magnitudes[0].mag
             else:
                 magnitude = 0.0
+            magnitude = magnitude or 0.0
 
             ot = origin.time.datetime.replace(tzinfo=timezone.utc)
 
@@ -350,33 +462,9 @@ def catalog_to_cnv(
                     continue
                 phase = arrival.phase.upper()[0]
                 tt = pick.time - origin.time
-                weight = default_weight
-                # 1. Nordic operator weight (highest priority)
-                if (
-                    hasattr(pick, "extra")
-                    and "nordic_pick_weight" in pick.extra
-                ):
-                    try:
-                        weight = int(pick.extra["nordic_pick_weight"]["value"])
-                    except Exception:
-                        pass
-
-                # 2. Otherwise derive from pick uncertainty
-                elif use_pick_time_errors and pick.time_errors:
-
-                    err = pick.time_errors.uncertainty
-
-                    if err is not None:
-                        if err <= 0.05:
-                            weight = 0
-                        elif err <= 0.10:
-                            weight = 1
-                        elif err <= 0.20:
-                            weight = 2
-                        elif err <= 0.50:
-                            weight = 3
-                        else:
-                            weight = 4
+                weight = pick_weight(
+                    pick, arrival, pick_weights, use_pick_time_errors
+                )
                 obs = f"{sta}{phase}{weight:d}{tt:6.2f}"
                 rep = f"{sta}{phase}"
                 observations.append(obs) if rep not in repetitions else None
@@ -404,15 +492,24 @@ def get_eid(line):
     return int(args[-3])
 
 
+def _two_digit_year(yy):
+    """Same pivot as strptime's %y: 69-99 -> 19xx, 00-68 -> 20xx."""
+    return 1900 + yy if yy >= 69 else 2000 + yy
+
+
 def add_origin(line, header):
-    date = re.sub(r"\s+", "0", line[1:7])
-    time = re.sub(r"\s+", "0", line[8:20])
-    ort = dt.strptime(" ".join([date, time]), "%y%m%d %H:%M:%S.%f")
+    # VELEST may print minute or second values of 60 (e.g. 15:60:00.262),
+    # so build the time from its parts instead of using strptime.
+    date = re.sub(r"\s", "0", line[1:7])
+    hh, mm, ss = line[8:20].split(":")
+    ort = dt(
+        _two_digit_year(int(date[:2])), int(date[2:4]), int(date[4:6])
+    ) + timedelta(hours=int(hh), minutes=int(mm), seconds=float(ss))
     lat = float(line[21:28])
     lon = float(line[30:37])
     dep = float(line[39:46])
     mag = float(line[47:51])
-    nst = float(line[52:55])
+    nobs = float(line[52:55])
     dmn = float(line[56:59])
     gap = float(line[60:63])
     rms = float(line[64:68])
@@ -423,7 +520,7 @@ def add_origin(line, header):
             "lon": lon,
             "dep": dep,
             "mag": mag,
-            "nst": nst,
+            "nobs": nobs,
             "dmn": dmn,
             "gap": gap,
             "rms": rms,
@@ -500,6 +597,14 @@ def summarize_single_events(single_events_file, sum_outfile):
                         phases.append(header)
                         events_df.extend(phases)
     events_df = DataFrame(events_df)
+    # nst = number of stations with phases listed for the event, as in
+    # summarize_catalog (VELEST's own NO column, kept as nobs, counts phases).
+    if "sta" in events_df and "ort" in events_df:
+        n_sta = events_df.dropna(subset=["sta"]).groupby("eid")["sta"].nunique()
+        is_header = events_df["ort"].notna()
+        events_df.loc[is_header, "nst"] = (
+            events_df.loc[is_header, "eid"].map(n_sta).fillna(0)
+        )
     events_df.to_csv(sum_outfile, index=False, float_format="%.3f")
     return events_df
 
@@ -518,11 +623,20 @@ def cnv2csv(cnv_inpfile, csv_outfile):
     with open(cnv_inpfile) as fo:
         for line in fo:
             if len(line) > 35 and line[25] in "SN" and line[35] in "EW":
-                ort = line[:17]
-                ort = ort[:-5]+"59.99" if ort[-5] == "6" else ort
-                ort = dt.strptime(ort, "%y%m%d %H%M %S.%f")
-                lat = float(line[18:25])
-                lon = float(line[27:35])
+                # Fields may be blank-padded and seconds may reach 60.
+                date = line[:6].replace(" ", "0")
+                hhmm = line[7:11].replace(" ", "0")
+                ort = dt(
+                    _two_digit_year(int(date[:2])),
+                    int(date[2:4]),
+                    int(date[4:6]),
+                ) + timedelta(
+                    hours=int(hhmm[:2]),
+                    minutes=int(hhmm[2:]),
+                    seconds=float(line[12:17]),
+                )
+                lat = float(line[18:25]) * (-1 if line[25] == "S" else 1)
+                lon = float(line[27:35]) * (-1 if line[35] == "W" else 1)
                 dep = float(line[37:43])
                 mag = float(line[46:50])
                 info = {
@@ -559,8 +673,15 @@ def reselect_best(config, stage_n):
         single_events_file, cat_rel_outfile, cat_sum_outfile
     )
 
+    # Location errors and residuals now come from VELEST: apply the
+    # RESELECTION overrides on top of EVENT_SELECTION.
+    reselection = config.model_copy(
+        update={
+            "EVENT_SELECTION": config.RESELECTION.apply(config.EVENT_SELECTION)
+        }
+    )
     cat_sel = select(
-        config,
+        reselection,
         cat_rel,
         cat_sum_outfile,
         select_cat_outfile,
@@ -568,19 +689,26 @@ def reselect_best(config, stage_n):
     )
 
     stations_inpfile = rootpath / "stations_sel.csv"
-    catalog_to_cnv(cat_sel, stations_inpfile, rootpath, select_cnv_outfile)
+    catalog_to_cnv(
+        cat_sel,
+        stations_inpfile,
+        rootpath,
+        select_cnv_outfile,
+        config.PICK_WEIGHTS,
+    )
 
 
 def perturb_catalog(
     config, run_n, cat_cnv_file, cat_csv_file, cnv_outfile, csv_outfile
 ):
 
-    lat_std = k2d(config.STAGE_04.dx_km)
-    lon_std = k2d(config.STAGE_04.dy_km)
+    cat_csv = read_csv(cat_csv_file)
+
+    # x = east, y = north; a degree of longitude shrinks with cos(latitude)
+    lat_std = k2d(config.STAGE_04.dy_km)
+    lon_std = k2d(config.STAGE_04.dx_km) / cos(radians(cat_csv["lat"].mean()))
     dep_std = config.STAGE_04.dz_km
     seed = config.STAGE_04.seed
-
-    cat_csv = read_csv(cat_csv_file)
 
     rng = random.default_rng(seed + run_n)
 
@@ -620,7 +748,7 @@ def prepare_catalog(config, cat_inp=None, stage_n=1, run_n=None):
         root = Path("outputs/stage_01")
 
         # inputs
-        catalog_csv_inpfile = Path("inputs/catalog.csv")
+        catalog_csv_inpfile = CATALOG_SUMMARY
         stations_inpfile = root / "stations_sel.csv"
 
         # output
@@ -635,13 +763,13 @@ def prepare_catalog(config, cat_inp=None, stage_n=1, run_n=None):
             select_cat_outfile,
             select_csv_outfile,
         )
-
-        run_dir = root / f"run_{run_n:02d}"
-        for n_model in range(1, config.SYNTHETIC_MODELS.n_models + 1):
-            model_dir = run_dir / f"model_{n_model:02d}"
-            catalog_to_cnv(
-                cat_sel, stations_inpfile, model_dir, select_cnv_outfile
-            )
+        catalog_to_cnv(
+            cat_sel,
+            stations_inpfile,
+            root,
+            select_cnv_outfile,
+            config.PICK_WEIGHTS,
+        )
 
     elif stage_n == 2:
         # output
@@ -650,7 +778,11 @@ def prepare_catalog(config, cat_inp=None, stage_n=1, run_n=None):
         original_cnv_outfile = root_out / "original.cnv"
         csv_outfile = root_out / "original.csv"
         catalog_to_cnv(
-            cat_inp, stations_inpfile, root_out, original_cnv_outfile
+            cat_inp,
+            stations_inpfile,
+            root_out,
+            original_cnv_outfile,
+            config.PICK_WEIGHTS,
         )
         cnv2csv(original_cnv_outfile, csv_outfile)
 
@@ -691,6 +823,10 @@ def prepare_catalog(config, cat_inp=None, stage_n=1, run_n=None):
         original_cnv_outfile = root_out / "original.cnv"
         csv_outfile = root_out / "original.csv"
         catalog_to_cnv(
-            cat_inp, stations_inpfile, root_out, original_cnv_outfile
+            cat_inp,
+            stations_inpfile,
+            root_out,
+            original_cnv_outfile,
+            config.PICK_WEIGHTS,
         )
         cnv2csv(original_cnv_outfile, csv_outfile)

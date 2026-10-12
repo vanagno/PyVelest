@@ -2,9 +2,19 @@ from ultraplot import Figure
 from matplotlib import rcParams
 from pathlib import Path
 from src.io.model import read_vmodel
-from numpy import array, asarray, arange, linspace
+from numpy import array, asarray, arange, linspace, cos, radians
 from pandas import read_csv, concat
 from obspy.geodetics.base import degrees2kilometers as d2k
+
+
+def _model_dirs(config, stage_n, run_dir):
+    """Model directories of this run (ignores leftovers of larger runs)."""
+    n_models = (
+        config.SYNTHETIC_MODELS.n_models
+        if stage_n == 1
+        else config.STAGE_03.n_models
+    )
+    return [run_dir / f"model_{n:02d}" for n in range(1, n_models + 1)]
 
 rcParams.update(
     {
@@ -193,8 +203,13 @@ def plot_models(config, stage_n, run_n):
     imodel = config.INPUTS.vmodel
     imodel = read_vmodel(imodel)
 
-    imodel_files = sorted(Path(run_dir).rglob("model.mod"))
-    omodels_files = sorted(Path(run_dir).rglob("velocity_summary.csv"))
+    model_dirs = _model_dirs(config, stage_n, run_dir)
+    imodel_files = [d / "model.mod" for d in model_dirs]
+    omodels_files = [
+        d / "velocity_summary.csv"
+        for d in model_dirs
+        if (d / "velocity_summary.csv").exists()
+    ]
     amodel_file = run_dir / "summary" / "averaged.csv"
     smodel_file = run_dir / "summary" / "simplified.csv"
 
@@ -441,7 +456,11 @@ def plot_statistics(config, stage_n, run_n):
 
         fig_outfile = Path("figures") / f"statistics_st03_run_{run_n:02d}.png"
 
-    attempts_files = sorted(Path(run_dir).rglob("attempts.csv"))
+    attempts_files = [
+        d / "attempts.csv"
+        for d in _model_dirs(config, stage_n, run_dir)
+        if (d / "attempts.csv").exists()
+    ]
 
     attempts = [read_csv(file) for file in attempts_files]
     attempts = concat(attempts, ignore_index=True)
@@ -729,6 +748,14 @@ def plot_dislocations(config, stage_n, run_n):
     cat_prt = read_csv(catalog_prt_file)
     cat_fin = read_csv(catalog_fin_file)
 
+    # Rows are compared by position, so VELEST must have returned every
+    # event in the same order.
+    if not (len(cat_ini) == len(cat_prt) == len(cat_fin)):
+        raise ValueError(
+            f"stage_04 run {run_n}: {len(cat_ini)} selected, {len(cat_prt)} "
+            f"perturbed and {len(cat_fin)} relocated events; cannot compare"
+        )
+
     delta = [
         config.STAGE_04.dx_km * 1.5,
         config.STAGE_04.dy_km * 1.5,
@@ -742,6 +769,11 @@ def plot_dislocations(config, stage_n, run_n):
 
     dis_prt = cat_prt[components] - cat_ini[components]
     dis_fin = cat_fin[components] - cat_ini[components]
+    # Longitude differences in km shrink with cos(latitude); d2k() below
+    # converts degrees of a great circle.
+    lon_scale = cos(radians(cat_ini["lat"]))
+    dis_prt["lon"] *= lon_scale
+    dis_fin["lon"] *= lon_scale
 
     axes_shape = array(
         [

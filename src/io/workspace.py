@@ -19,12 +19,18 @@ def prepare_workspace(config):
         target.mkdir(parents=True, exist_ok=True)
 
         if directory in ["stage_01", "stage_03"]:
-            for n_run in range(1, config.STAGE_01.n_runs + 1):
+            if directory == "stage_01":
+                n_runs = config.STAGE_01.n_runs
+                n_models = config.SYNTHETIC_MODELS.n_models
+            else:
+                n_runs = config.STAGE_03.n_runs
+                n_models = config.STAGE_03.n_models
+            for n_run in range(1, n_runs + 1):
                 run_dir = target / f"run_{n_run:02d}"
                 run_dir.mkdir(parents=True, exist_ok=True)
                 sum_dir = run_dir / "summary"
                 sum_dir.mkdir(parents=True, exist_ok=True)
-                for n_model in range(1, config.SYNTHETIC_MODELS.n_models + 1):
+                for n_model in range(1, n_models + 1):
                     model_dir = run_dir / f"model_{n_model:02d}"
                     model_dir.mkdir(parents=True, exist_ok=True)
 

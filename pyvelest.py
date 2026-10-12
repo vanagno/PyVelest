@@ -92,11 +92,26 @@ class Main:
 
 
 if __name__ == "__main__":
-    config = Path("configs") / "user.yaml"
-    app = Main(config.as_posix())
-    app.load_catalog()
-    app.stage_01()
-    app.stage_02()
-    app.stage_03()
-    app.stage_04()
-    app.stage_05()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Run the PyVELEST stages.")
+    parser.add_argument(
+        "--config",
+        default=(Path("configs") / "user.yaml").as_posix(),
+        help="user configuration file (default: configs/user.yaml)",
+    )
+    parser.add_argument(
+        "--stages",
+        nargs="+",
+        type=int,
+        choices=[1, 2, 3, 4, 5],
+        default=[1, 2, 3, 4, 5],
+        help="stages to run, in order (default: all)",
+    )
+    args = parser.parse_args()
+
+    app = Main(args.config)
+    if {1, 2, 5} & set(args.stages):
+        app.load_catalog()
+    for stage_n in sorted(args.stages):
+        getattr(app, f"stage_{stage_n:02d}")()

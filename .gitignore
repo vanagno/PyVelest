@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+# local VELEST builds (src/exc/build_velest.sh)
+src/exc/velest_gfortran
+# control file older versions copied to the repo root
+/velest.cmn

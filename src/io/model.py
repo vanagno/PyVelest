@@ -12,9 +12,7 @@ def read_vmodel(vmodel_file: str | Path) -> VMODEL:
             if l == 0:
                 vmodel.model_name = line.strip()
             elif l == 1:
-                vmodel.n_layers, header = [
-                    int(v) if i == 0 else v for i, v in enumerate(line.split())
-                ]
+                vmodel.n_layers = int(line.split()[0])
             elif 1 < l < vmodel.n_layers + 2:
                 vel, depth, vdamp = [float(i) for i in line.split()[:3]]
                 layer = LAYER.model_validate(
@@ -26,6 +24,8 @@ def read_vmodel(vmodel_file: str | Path) -> VMODEL:
                 layer = LAYER.model_validate(
                     {"vel": vel, "depth": depth, "vdamp": vdamp}
                 )
+                if vmodel.layers_vs is None:
+                    vmodel.layers_vs = []
                 vmodel.layers_vs.append(layer)
     return vmodel
 
@@ -449,50 +449,32 @@ def write_vmodel(vmodel: VMODEL, vmodelout: str | Path):
 def simplified2vmodel(config, simplified_modelfile, final_modelfile):
     first_layer_dmp = config.SYNTHETIC_MODELS.first_layer_dmp
     last_layer_dmp = config.SYNTHETIC_MODELS.last_layer_dmp
-    vmodel = VMODEL.model_construct()
     model_df = read_csv(simplified_modelfile)
-    for r, row in model_df.iterrows():
-        if row.model == 1:
-            vmodel.model_name = "Simplified"
-            vmodel.n_layers = (
-                int(model_df.shape[0] / 2)
-                if 2 in model_df.model.values
-                else model_df.shape[0]
-            )
-            layer = LAYER.model_validate(
+    vp_df = model_df[model_df.model == 1].reset_index(drop=True)
+    vs_df = model_df[model_df.model == 2].reset_index(drop=True)
+    n_layers = len(vp_df)
+
+    def layers(df):
+        return [
+            LAYER.model_validate(
                 {
                     "vel": row.velocity,
                     "depth": row.depth,
                     "vdamp": (
                         first_layer_dmp
-                        if r == 0
-                        else (
-                            last_layer_dmp
-                            if r == (vmodel.n_layers - 1)
-                            else 1.0
-                        )
+                        if i == 0
+                        else last_layer_dmp if i == n_layers - 1 else 1.0
                     ),
                 }
             )
-            vmodel.layers_vp.append(layer)
-        elif row.model == 2:
-            vmodel.n_layers /= 2
-            layer = LAYER.model_validate(
-                {
-                    "vel": row.velocity,
-                    "depth": row.depth,
-                    "vdamp": (
-                        first_layer_dmp
-                        if r == vmodel.n_layers
-                        else (
-                            last_layer_dmp
-                            if r == (vmodel.n_layers - 1) * 2
-                            else 1.0
-                        )
-                    ),
-                }
-            )
-            vmodel.layers_vs.append(layer)
+            for i, row in df.iterrows()
+        ]
+
+    vmodel = VMODEL.model_construct()
+    vmodel.model_name = "Simplified"
+    vmodel.n_layers = n_layers
+    vmodel.layers_vp = layers(vp_df)
+    vmodel.layers_vs = layers(vs_df) if len(vs_df) else None
     write_vmodel(vmodel, final_modelfile)
 
 
@@ -505,7 +487,7 @@ def prepare_model(config, stage_n, run_n=None):
 
         # Read / Implement / Write
         if run_n == 1:
-            vmodel_input = Path("inputs") / "vmodel.dat"
+            vmodel_input = Path(config.INPUTS.vmodel)
         else:
             vmodel_input = (
                 rootout / f"run_{run_n-1:02d}" / "summary" / "model.mod"
@@ -605,13 +587,20 @@ def finalized_inverted_models(config, stage_n, run_n):
 
     if stage_n == 1:
         root = Path("outputs/stage_01")
+        n_models = config.SYNTHETIC_MODELS.n_models
     elif stage_n == 3:
         root = Path("outputs/stage_03")
+        n_models = config.STAGE_03.n_models
 
     run_dir = root / f"run_{run_n:02d}"
 
-    # inputs
-    omodel_files = sorted(run_dir.rglob("velocity_summary.csv"))
+    # inputs: only this run's models, and only those VELEST finished
+    omodel_files = [
+        run_dir / f"model_{n:02d}" / "velocity_summary.csv"
+        for n in range(1, n_models + 1)
+        if (run_dir / f"model_{n:02d}" / "velocity_summary.csv").exists()
+    ]
+    print(f"+++ Averaging {len(omodel_files)} of {n_models} inverted models")
 
     # outputs
     averaged_modelfile = run_dir / "summary" / "averaged.csv"
