@@ -1,354 +1,317 @@
-# Using PyVelest with the Ioannina catalog: review and proposed workflow
+# PyVelest for the Ioannina 2026 sequence (PhaseNet → REAL → hypoSA input)
 
-This note covers three things:
+This branch adapts PyVelest to your data and runs it. It contains:
 
-1. How the inputs in `inputs/My inputs/` compare with what PyVelest expects.
-2. Problems in the code that affect a run on this dataset.
-3. A step-by-step workflow, and the information still needed.
+* **Input converters:** your REAL/hypoSA files → `inputs/catalog.pha` + `inputs/stations.csv`; your TauP models
+  `kiratzi87.nd` / `ionio.nd` → VELEST starting models.
+* **Pipeline fixes:** several of them change results, including bugs that were already in the original code
+  (see [§7](#7-what-changed-in-the-code)).
+* **Results:** a minimum 1-D model, station delays and relocations for the target area 39.5–39.8°N /
+  20.4–20.8°E, from **four starting models**, in `results/ioannina/`.
 
-To check the claims below, I ran parts of the pipeline on `ioannina_final.txt` in a scratch copy of the repo:
-`load_catalog`, a reduced `stage_01` (1 run × 2–3 models) and `stage_02` with all 10,362 events.
-**The station coordinates in that test were placeholders.** It shows that the file formats go through
-VELEST without errors. The velocity models and locations it produced mean nothing.
-
----
-
-## 1. Your inputs at a glance
-
-| Input | What the code expects | What you have | Status |
-|---|---|---|---|
-| Catalog | ObsPy-readable file (the example uses Nordic `sample.out`) with picks, location quality (erh/erz/rms/gap/nst) and Nordic pick weights 0–4 | `ioannina_final.txt`: HypoDD phase format, 10,362 events, 2026-03-01 → 2026-08-31, 130,843 picks (69,153 P / 61,690 S), 13 stations | **Readable as is** (ObsPy reads the HypoDD phase format). Quality info and weights are lost; see §2 |
-| Stations | `inputs/stations.csv` with `code,lat,lon,elv` (elv in m, ≥ 0) | **missing** | **Blocker** |
-| Velocity model | VELEST `.mod` text file (`inputs/vmodel.dat`) | `kiratzi87.nd` (TauP `.nd` format, whole-Earth) | Needs conversion; see §3 |
-
-Facts about the catalog that shape the workflow:
-
-* **The header columns `eh`, `ez` and `rms` are all 0.0**, so the catalog has no location-quality information.
-* **4,999 events (48 %) are at exactly 0.0 km depth.** All depths lie on a 2 km grid (0, 2, 4 … 30 km).
-  That looks like an associator's grid search (e.g. REAL) rather than a final location, and depth 0 probably
-  means "unconstrained / top of grid". These hypocentres are poor starting points for a simultaneous inversion.
-* **Pick weights range from 0.30 to 0.987.** That looks like ML picker probabilities (0.3 is PhaseNet's
-  default threshold), not HypoDD weights.
-* **Phases per event:** 8–24 (median 12, about 6 stations).
-  Events with ≥ 8 P picks: 3,003. Events with ≥ 10 P picks: 1,167. Events with ≥ 12 stations: only 182.
-* **Picks per station:** KSTR 19,822 · IGT 19,292 · PRMD 19,246 · TETR 18,936 · JAN 18,228 · PENT 10,858 ·
-  KPRO 7,350 · KEK 7,296 · AMPL 3,518 · NEST 3,324 · LFKM 2,314 · KZN 540 · OTHN 119.
-  All station codes are ≤ 4 characters, which VELEST requires.
-* **Vp/Vs from a Wadati fit** on 29k P–S pairs (P prob ≥ 0.7, S prob ≥ 0.55) is **≈ 1.82**.
-  That is consistent with the 1.80 in `kiratzi87.nd`.
+Every number below comes from the full runs in `results/ioannina/*/summary.json`.
 
 ---
 
-## 2. Code review: problems that affect your run
+## 1. Quick start
 
-File references are relative to the repo root.
+```sh
+# VELEST: the bundled src/exc/velest is an Intel build (needs libimf.so). If it does not run:
+sh src/exc/build_velest.sh                      # -> src/exc/velest_gfortran
+#   then set GLOBAL_SETTINGS.velest_exec: src/exc/velest_gfortran in the config
 
-### Blocking or high impact
+# Inputs (already committed; rebuild only if the REAL/hypoSA files change)
+python tools/prepare_real_inputs.py \
+    --stations "inputs/My inputs/ioannina/ioan_stations.dat" \
+    --phases "inputs/My inputs/ioannina_final.txt" \
+    --sa-catalog "inputs/My inputs/ioannina/catalogSA_allday.txt" \
+    --sa-phases "inputs/My inputs/ioannina/phaseSA_allday_kiratzi87.txt"
 
-1. **No station coordinates.** Everything depends on them: distances, azimuths, the reference station,
-   the station file and VELEST itself.
+# Starting models (already committed)
+python tools/nd_to_velest.py "inputs/My inputs/kiratzi87.nd" --tops -3 0 1 2 3 4 6 8 10 13 16 20 25 \
+    --moho 30 --vtop 3.5 --min-increment 0.05 --out inputs/vmodel_kiratzi87.dat           # add --interp step
+python tools/nd_to_velest.py "inputs/My inputs/ionio.nd" --tops -3 0 1 2 3 4 6 8 10 13 16 20 25 30 35 \
+    --moho 40 --vtop 3.5 --min-increment 0.05 --out inputs/vmodel_ionio.dat               # for *_step.dat
 
-2. **Crash on VELEST origin times with minute = 60.** `add_origin` (`src/io/catalog.py:410`) parses
-   VELEST's single-event output with `strptime`. VELEST sometimes prints times such as `15:60:00.262`.
-   Stage 2 on your catalog **crashed** on this. The ~120 example events never triggered it.
-   `cnv2csv` (`catalog.py:522`) has a similar second = 60 workaround that clips the time to 59.99 s.
-   *Fix:* parse hour, minute and second separately and add them as a `timedelta`.
-   I tested this in the scratch copy.
-
-3. **S picks are thrown away.** `phase_mode: 1` (`configs/stage_0X/velest.yaml:108`) tells VELEST
-   "P only", and VELEST then skips every S pick (`velest.f:1966`). That is 47 % of your data.
-   Worse, the stage-2 and stage-5 single-event outputs list only the phases VELEST used.
-   The reselected `select.cnv` therefore contains only P, and stages 3–4 cannot recover S even if you
-   change the setting later.
-   *Fix:* use `phase_mode: 3` (S from a fixed Vp/Vs; S constrains depth) with `vp_vs_ratio: 1.80` in
-   **all five** stage configs. I tested that VELEST runs this way with your data.
-
-4. **Pick probabilities are discarded.** The weight is read only from Nordic `nordic_pick_weight`
-   (`catalog.py:70-74` and `catalog.py:355-362`). ObsPy stores your probabilities in `arrival.time_weight`,
-   so every pick becomes class 0 (full weight). A proposed mapping:
-
-   | prob. | VELEST class | P picks | S picks |
-   |---|---|---|---|
-   | ≥ 0.85 | 0 | 43 % | 7 % |
-   | 0.70–0.85 | 1 | 22 % | 24 % |
-   | 0.55–0.70 | 2 | 15 % | 30 % |
-   | 0.40–0.55 | 3 | 13 % | 24 % |
-   | < 0.40 | 4 (weight 0) | 7 % | 15 % |
-
-5. **The event-selection filters have no effect on this catalog.** `select` (`catalog.py:151-164`)
-   keeps every event where `erh/erz/rms/gap/nst` is missing (`| df[column].isna()`). For your catalog
-   all five columns are empty. The within-cell ranking (`select3D.py:60-63`) sorts by those same empty
-   columns, which leaves magnitude as the only criterion.
-   In the test, 23 % of the 500 events picked for stage 1 had depth 0.
-   Also, with only 13 stations, `min_used_stations: 12` would leave 182 events.
-
-6. **Results from the example run can leak into yours.**
-   * The repo has 5,185 output and figure files from the example dataset committed under `outputs/` and
-     `figures/`, and `clean_workspace: false` is set (`configs/user.yaml:74`).
-   * `finalized_inverted_models` averages **every** `velocity_summary.csv` it finds under a run directory
-     (`src/io/model.py:614`).
-   * `run_velest` silently skips a model whose VELEST run wrote to stderr (`src/core/velest.py:35`).
-
-   So if you use fewer than 50 models, or if a run fails, the old example results are averaged into your
-   model without any warning. **Empty `outputs/` and `figures/` before the first run**, or set
-   `clean_workspace: true`.
-
-7. **The origin longitude is still the example's, and VELEST's sign convention is easy to miss.**
-   VELEST's `olon` is **positive West, negative East** (`velest.f:1320-1324`). All five stage configs have
-   `origin_longitude: -46.75` (line 23), which is 46.75°E from the example. For your area use about
-   `origin_latitude: 39.65`, `origin_longitude: -20.75`. Adjust these to the network centre once the
-   station coordinates are known.
-
-8. **Input paths don't match the repo layout and are partly hard-coded.**
-   * `configs/user.yaml:2` still points to `inputs/sample.out`, which no longer exists since the inputs
-     moved into subfolders. The repo as committed doesn't run.
-   * `prepare_station` hard-codes `inputs/stations.csv` (`src/io/station.py:560`), and `prepare_model`
-     hard-codes `inputs/vmodel.dat` (`src/io/model.py:508`). Both ignore `INPUTS`.
-   * `catalog.csv` is always written to `inputs/` (`catalog.py:96`).
-
-   For now, put the three input files directly in `inputs/` under those names.
-
-### Medium
-
-9. **Stages 2 and 5 relocate without station corrections.** Those configs set `use_station_corrections: false`
-   (`configs/stage_02|05/velest.yaml:159`), and VELEST then zeroes the input delays (`velest.f:1636-1639`).
-   The final catalog is therefore relocated with the minimum 1-D model but **without** the station terms
-   inverted together with it. I recommend `true`.
-
-10. **Some YAML settings are silently ignored.** Several keys don't match the pydantic field names,
-    and pydantic ignores unknown keys:
-
-    | YAML key | Model field |
-    |---|---|
-    | `resolution_matrix` | `compute_resolution` |
-    | `topography` | `use_topography` |
-    | `shot_corrections` | `use_shot_corrections` |
-    | `write_summary_cards` | `write_summary_file` |
-    | `ale` | `averaging_kernel` |
-
-    For example, stages 2 and 5 ask for a resolution matrix and summary cards, but the generated
-    `velest.cmn` has 0 for both.
-
-11. **The reference-station ranking expects PG/SG phase names.** `calculate_reference_station_scores`
-    (`station.py:286-294`) only counts `PG`/`SG`. Your phases are `P`/`S`, so the residual and phase-count
-    parts score zero. Your catalog has no residuals anyway. The `REFERENCE_STATION` weights in `user.yaml`
-    are never passed in (`station.py:484`).
-    In effect, the reference station (the highest ICC, `velest.f:1652-1654`) is chosen by event coverage
-    and distance only. It is safer to set it by hand: a central station with many picks. JAN, KSTR, IGT,
-    PRMD and TETR are the best-recorded; which is most central depends on the coordinates.
-
-12. **One box filters both events and stations.** `STUDY_AREA` selects events and also drops stations
-    outside it (`station.py:21`). If you shrink the box to focus on the seismicity, peripheral stations
-    such as OTHN, KZN or LFKM could disappear and take their picks with them. Keep the box wide enough for
-    all stations and limit events with `max_gap_deg` instead.
-
-13. **The random-model generator smooths sharp velocity jumps.** `generate_random_models`
-    (`src/model/Models.py:363-453`) works as follows:
-    * It perturbs the velocity *increments* and rejects any increment below 0.01 km/s.
-    * It rescales the increments so the top and bottom velocities stay fixed.
-
-    With a step-like model (big jumps next to near-zero increments), the ensemble mean drifts away from the
-    starting model. With a Kiratzi-faithful step model I measured up to **0.28 km/s** of bias; with a
-    smoothed version, ≤ 0.07 km/s. Two consequences:
-    * Start from a smooth model (see §3).
-    * The top of the half-space (the Moho depth) and its velocity are **never** perturbed. The Moho depth
-      has to be tested with separate starting models.
-
-14. **Unclear crash when nothing passes the selection.** If no event passes, `select3D.py:97-99` fails with
-    `KeyError: ['ilat','ilon','idep']`. If you see that, the thresholds are too strict.
-
-### Minor / for awareness
-
-* **The bundled binary won't run here.** `src/exc/velest` was built with the Intel compiler and needs
-  `libimf.so`. Unless you have the Intel runtime, rebuild it with gfortran. This compiled cleanly and ran
-  your data:
-  `cd src/exc && gfortran -O2 -std=legacy -ffixed-line-length-none -fno-automatic velest.f -o velest`
-* **VELEST array limits** (`src/exc/vel_com.f:13-19`): 4,500 events in simultaneous mode (500 is fine),
-  200 stations, 100 layers. Single-event mode (stages 2 and 5) has no event limit.
-* **Model limits:** the model validators allow Vp ≤ 8.5 km/s and layer tops ≤ 60 km (`Models.py:157-158`).
-  That is fine for a crustal model.
-* **Workspace directories:** `prepare_workspace` sizes the `stage_03` folders with `STAGE_01.n_runs` and
-  `SYNTHETIC_MODELS.n_models` (`src/io/workspace.py:21-29`). Keep `STAGE_03` values ≤ those.
-* **Selection semantics change between stages:** after stage 2 the `nst` column is VELEST's *number of
-  observations* (P + S), not a station count. The same `min_used_stations` threshold means different
-  things in stage 1 and stage 2.
-* **Run time:** `load_catalog` takes about 1 min on your file. Each VELEST simultaneous inversion
-  (500 events) took about 15 s here, so the default stage 1 (5 runs × 50 models) is roughly an hour.
-
----
-
-## 3. Velocity model: from `kiratzi87.nd` to VELEST
-
-`kiratzi87.nd` is a TauP model of the whole Earth. VELEST only needs the crust and the uppermost mantle.
-Read as layer tops, the crust is:
-
-| top (km) | Vp | Vs | Vp/Vs |
-|---|---|---|---|
-| 0 | 4.20 | 2.33 | 1.80 |
-| 2 | 5.40 | 3.00 | 1.80 |
-| 10 | 6.00 | 3.33 | 1.80 |
-| 30 | 6.00 | 3.33 | 1.80 |
-| *mantle* 70 | 8.00 | 4.49 | — |
-
-**The mantle part needs clarifying.** In TauP `.nd` semantics, the lines `30 km → 6.00` then `70 km → 8.00`
-mean a *linear gradient* from 6.0 to 8.0 km/s between 30 and 70 km, with no Moho discontinuity. Most likely
-the intent was a Moho at about 30 km with Pn ≈ 8.0 km/s. This matters: Pn arrives first beyond roughly
-100–150 km, which is about your network's aperture.
-
-**Proposed starting model** (P only, to be used with `phase_mode: 3` and `vp_vs_ratio: 1.80`).
-It keeps the Kiratzi values at 2, 10 and 30 km but smooths between them, so the random-model generator
-doesn't bias it (item 13). The top layer starts above the highest station, as VELEST requires.
-
-```
-KIRATZI87_GRADIENT
- 14        vel,depth,vdamp,phase(f5.2,5x,f7.2,2x,f7.3,3x,a1)
- 4.20     -3.00    50.00           P-VELOCITY MODEL
- 4.80      1.00    1.000
- 5.20      2.00    1.000
- 5.40      4.00    1.000
- 5.60      6.00    1.000
- 5.80      8.00    1.000
- 6.00     10.00    1.000
- 6.10     13.00    1.000
- 6.20     16.00    1.000
- 6.30     19.00    1.000
- 6.40     22.00    1.000
- 6.50     26.00    1.000
- 6.60     28.00    1.000
- 8.00     30.00    10.00
+# Run: one config per copy of the repository (all configs write to outputs/ and figures/)
+python pyvelest.py                                    # configs/user.yaml  (kiratzi87 start)
+python pyvelest.py --config configs/user_ionio.yaml   # ionio start
+python pyvelest.py --stages 5                         # redo single stages; earlier outputs are kept
 ```
 
-The minimum-1-D-model practice (Kissling et al., 1994; Kissling, 1995) is to **run several starting models**
-and check that they converge. Good candidates:
+A full run is 5 × 50 + 5 × 25 VELEST inversions of 500 events. One inversion takes about 15 s, so a run
+takes about 60 min with `n_jobs: 1` and about 20 min with `n_jobs: 4`. The final products land in
+`outputs/stage_fn/`:
 
-* the model above;
-* the same model with the Moho at 35 km and at 40 km (the generator never moves it; Moho depth varies
-  across Epirus and the Pindus);
-* a faster and a slower variant (± 0.2 km/s);
-* if you have it, a published minimum 1-D model for the area. Haslinger et al. (1999, *Tectonophysics*)
-  derived one for the Gulf of Arta / Ionian region with VELEST.
-
----
-
-## 4. Proposed workflow
-
-### Step 0: Environment
-* Python ≥ 3.10 with `obspy pandas pydantic>=2 pyyaml tqdm matplotlib ultraplot`.
-* Rebuild VELEST with gfortran (command above).
-* Empty `outputs/` and `figures/`, or set `clean_workspace: true` for the first run.
-
-### Step 1: Inputs (flat in `inputs/`)
-* `inputs/stations.csv`: `code,lat,lon,elv` for the 13 stations. **You provide this.**
-* `inputs/ioannina_final.txt`: the catalog unchanged; the code changes in Step 2 handle weights and quality.
-* `inputs/vmodel.dat`: the starting model from §3.
-
-### Step 2: Small code changes (I can make these once you confirm)
-1. Map `arrival.time_weight` (pick probability) to VELEST classes 0–4 (table in §2, item 4).
-2. Fix the minute/second = 60 parsing (§2, item 2).
-3. Add a **stage 0**: relocate *all* events once in single-event mode with the starting model.
-   This reuses the stage-2 machinery (`reselect_best`). Stage 1 then selects from VELEST's real
-   erh/erz/rms/gap/nst instead of the empty catalog values.
-   It also replaces the depth-0 / 2 km-grid hypocentres with real locations before the simultaneous inversion.
-   *(A simpler fallback: compute nst and the azimuthal gap from the picks and the station coordinates,
-   and leave depth-0 events out of the stage-1 selection.)*
-4. Accept `P`/`S` in the reference-station scoring and pass the `REFERENCE_STATION` weights,
-   or allow a fixed reference station.
-5. Fix the YAML key names (§2, item 10); set `use_station_corrections: true` in stages 2 and 5.
-6. Use the `INPUTS` paths everywhere; raise clear errors on an empty selection or a failed VELEST run.
-
-### Step 3: Configuration
-`configs/user.yaml` (starting values, to tune after stage 0):
-```yaml
-INPUTS:
-  catalog: inputs/ioannina_final.txt
-  stations: inputs/stations.csv
-  vmodel: inputs/vmodel.dat
-STUDY_AREA:              # must contain ALL stations (the box filters stations too)
-  min_lat: 38.60
-  max_lat: 40.70
-  min_lon: 19.40
-  max_lon: 22.20
-  lat_hemisphere: N
-  lon_hemisphere: E
-EVENT_SELECTION:
-  max_events: 500
-  cell_count_lat: 6
-  cell_count_lon: 6
-  cell_count_depth: 5
-  max_horizontal_error_km: 2.0
-  max_depth_error_km: 3.0
-  max_rms_sec: 0.3
-  max_gap_deg: 180
-  min_used_stations: 8   # after a VELEST relocation this is the number of P+S observations
-FIGURE_SETTINGS:
-  min_sei_lat: 38.60
-  max_sei_lat: 40.70
-  min_sei_lon: 19.40
-  max_sei_lon: 22.20
-  max_sei_depth: 30.0
-  max_vel_depth: 40.0
-GLOBAL_SETTINGS:
-  clean_workspace: true
-```
-All five `configs/stage_0X/velest.yaml`:
-```yaml
-COORDINATE_SYSTEM:
-  origin_latitude: 39.65
-  origin_longitude: -20.75   # VELEST: East longitudes are NEGATIVE
-VELOCITY:
-  phase_mode: 3
-  vp_vs_ratio: 1.80
-RELOCATION:
-  maximum_distance: 150.0    # check against the network geometry; limits Pn and 3-D effects
-```
-In stages 2 and 5 only: `use_station_corrections: true`.
-
-### Step 4: Stage 0, initial relocation (new)
-Locate all 10,362 events with the starting model.
-* Look at the distributions of RMS, GAP, erh, erz and the number of observations, and set the
-  `EVENT_SELECTION` thresholds from them.
-* Check how many of the former depth-0 events get a constrained depth.
-
-### Step 5: Stage 1, minimum 1-D model (ensemble)
-`n_runs` × `n_models` VELEST inversions on the about 500 best, spatially balanced events, starting from
-perturbed versions of the model.
-
-Check:
-* `figures/models_st01_run_XX.png` and `statistics_st01_run_XX.png`: the ensemble should converge and the
-  RMS should drop.
-* The station delays in `run_XX/summary/stations.sta`: they should be small and geologically sensible.
-* The layers merged by `merging_threshold_km_s`.
-
-### Step 6: Stage 2, relocate and reselect
-Relocate all events with the stage-1 model and station delays, then reselect the best events using
-VELEST's errors.
-
-### Step 7: Stage 3, refinement
-Repeat the ensemble inversion on the reselected events, starting from the stage-2 model.
-
-### Step 8: Stage 4, stability test
-Shift the hypocentres randomly (`dx/dy/dz_km`, 10 km by default) and invert again. The events should move
-back and the model shouldn't change; see `figures/dislocation_XX.png`. Also run Steps 5–8 for the other
-starting models (§3): a robust minimum 1-D model should not depend on which one you start from.
-
-### Step 9: Stage 5, final products
-Relocate everything with the final model and station delays. The outputs go to `outputs/stage_fn/`:
-`model.mod`, `model.csv`, `stations.sta`, `stations.csv`, `relocated.csv` and `relocated.out`.
+* `model.mod` / `model.csv`: the minimum 1-D model (`model.csv` includes the Vs that was used).
+* `stations.sta` / `stations.csv`: station delays; P delays plus the S delay that was applied.
+* `relocated.csv`: phase-level relocations.
+* `events.csv`: one row per event, with quality flags.
 
 ---
 
-## 5. Information needed from you
+## 2. Inputs and how they were built
 
-1. **The station list** (required): network, code, latitude, longitude and elevation in metres for
-   KSTR, IGT, PRMD, TETR, JAN, PENT, KPRO, KEK, AMPL, NEST, LFKM, KZN and OTHN.
-   StationXML or a plain table is fine.
-2. **How the catalog was made:** which picker (are the weights pick probabilities?), which
-   associator/locator (REAL, GaMMA, HypoInverse, NonLinLoc …), and what the 0.0 km depths mean.
-   If you have locator output with errors, RMS and GAP, it can replace stage 0.
-3. **The velocity model:**
-   * Is the Kiratzi model meant to have a Moho at 30 km with 8.0 km/s, or the 30→70 km gradient?
-   * Its reference.
-   * Any other regional models, or Moho depths (e.g. from receiver functions), you'd like to test.
-4. **The target area:** the whole 38.6–40.7°N / 19.4–22.1°E cloud, or a specific sequence?
-   This sets the study box and the coordinate origin.
-5. **Known station issues** during March–August 2026: timing problems, station moves or replacements.
+| File | Built from | Notes |
+|---|---|---|
+| `inputs/stations.csv` | `ioan_stations.dat` | 16 stations, elevation km → m. Only 13 have picks; KBN, LSK and SRN have none. |
+| `inputs/catalog.pha` | hypoSA hypocentres and origin times (`catalogSA_allday.txt`) + picks and PhaseNet probabilities (`ioannina_final.txt`) | Events are matched by order and checked against `phaseSA_allday_kiratzi87.txt`. Travel times are re-referenced to the hypoSA origin (they match hypoSA's to 1 ms). The hypoSA residual goes into the header's RMS field. Magnitudes come from `ioannina_final.txt`; its picks are identical to `phase_allday.txt`. |
+| `inputs/vmodel_*.dat` | `kiratzi87.nd`, `ionio.nd` | See §3. |
+
+Facts about the data that drive the settings:
+
+* **Catalogue size:** 10,362 events and 130,843 picks (69,153 P / 61,690 S). 9,540 events (92 %) lie in
+  the target box.
+* **Network geometry:** no station lies inside the target box. The nearest are JAN (~21 km) and IGT
+  (~26 km), the farthest with picks is KZN (~124 km). Depth resolution is the weak point (§6).
+* **Pinned depths:** **hypoSA pins 44 % of the events at exactly 0 km.** These events are left out of the
+  stage-1 event selection. In stages 2 and 5 VELEST starts them at 10 km
+  (`INPUTS.unconstrained_depth_below_km` / `start_depth_km`), because a relocation started at the free
+  surface stays there.
+* **Pick weights:** PhaseNet probabilities become VELEST weight classes (`PICK_WEIGHTS`):
+
+  | probability | ≥ 0.85 | 0.70–0.85 | 0.55–0.70 | 0.40–0.55 | < 0.40 |
+  |---|---|---|---|---|---|
+  | VELEST class | 0 | 1 | 2 | 3 | 4 (not used in inversions) |
+  | share of P picks | 43 % | 22 % | 15 % | 13 % | 7 % |
+  | share of S picks | 7 % | 24 % | 30 % | 24 % | 15 % |
+
+* **Vp/Vs = 1.82**, from a Wadati fit of 27k P–S pairs in the box; the median per-event slope is 1.83.
+  VELEST uses the S picks with this fixed ratio (`phase_mode: 3`), so the S delay of each station is
+  1.82 × its P delay.
+
+---
+
+## 3. Starting models
+
+TauP `.nd` files are interpolated **linearly** between the listed depths; a jump needs two rows at the
+same depth. `kiratzi87.nd` and `ionio.nd` list their crust as single rows. TauP (and REAL's travel-time
+tables) therefore see them as **gradient** models, even if they were meant as layer tops. I built both
+readings:
+
+* `linear` = TauP semantics (the default of `tools/nd_to_velest.py`);
+* `step` = each row is the top of a constant-velocity layer.
+
+That gives four starting models.
+
+Common choices:
+
+* **Top layer:** −3 to 0 km at 3.5 km/s in all four models. It only covers station elevations (up to
+  1.13 km), it is heavily damped and it is never merged. When it differed between models it acted as a
+  different velocity floor in each, because low-velocity layers are not allowed.
+* **Layering:** 1–2 km layers in the upper crust, 3–5 km deeper.
+* **Velocity steps:** every step is at least 0.05 km/s, so PyVelest's random-model generator stays
+  within ~0.06 km/s of the starting model. As a consequence the flat 6.0 km/s section of kiratzi87 starts
+  at 6.05–6.20.
+* **Moho:** at 30 km (kiratzi87) / 40 km (ionio), with 8.0 km/s below. Your files put the first
+  "mantle" row at 70 km, which a TauP reader turns into a 6→8 km/s gradient; that cannot be expressed in
+  VELEST, and this geometry does not resolve it anyway (§6).
+
+![starting and final models](../results/ioannina/comparison/models_comparison.png)
+
+---
+
+## 4. Pipeline settings for this dataset
+
+| Stage | What runs | Key settings |
+|---|---|---|
+| 1 | 5 runs × 50 simultaneous inversions from perturbed starting models; each run's average model is merged and seeds the next run | Events: box, depth > 0.1 km, ≥ 8 stations with usable picks, gap ≤ 180° (usable stations), hypoSA RMS ≤ 0.5 s → 739 candidates → 500 spread over a 6×6×6 grid. Damping: 1.0 (velocity), 0.1 (station delays). Reference station: JAN (highest score) |
+| 2 | Single-event relocation of all 10,362 events with the stage-1 model and delays, then reselection | `RESELECTION`: erh ≤ 4 km, 0.5 ≤ erz ≤ 4.5 km, RMS ≤ 0.3 s → 1,375–1,555 candidates → 500 |
+| 3 | 5 runs × 25 inversions on the reselected events | as stage 1 |
+| 4 | Stability test: unperturbed reference inversion (`run_00`), then 5 inversions with hypocentres shifted N(0, 5 km) in x, y and z | Final positions are compared with `run_00` |
+| 5 | Final single-event relocation of all events with the final model and delays → `outputs/stage_fn` | Station delays are used (`use_station_corrections: true`) |
+
+Other settings, in all stages:
+
+* VELEST coordinate origin: 39.65°N 20.60°E; VELEST counts East longitudes as negative, so `olon` = −20.60.
+* Maximum epicentral distance: 150 km.
+* `phase_mode: 3`, Vp/Vs 1.82.
+
+---
+
+## 5. Results
+
+### 5.1 Velocity model
+
+All 375 inversions of every run converged (5 × 50 in stage 1, 5 × 25 in stage 3). Final models (Vp in
+km/s at each depth):
+
+| depth (km) | kiratzi87 linear | ionio linear | kiratzi87 layer-top | ionio layer-top | spread |
+|---|---|---|---|---|---|
+| 0.5 | 3.51 | 3.50 | 3.52 | 3.51 | 0.02 |
+| 1.5 | 3.51 | 3.50 | 4.23 | 4.30 | 0.80 |
+| 2.5 | 3.51 | 3.92 | 4.23 | 4.30 | 0.79 |
+| 3.5 | 5.51 | 5.46 | 4.23 | 5.66 | 1.43 |
+| 5–7 | 5.51 | 5.46 | 5.72 | 5.66 | 0.26 |
+| 9 | 6.12 | 5.92 | 5.72 | 5.66 | 0.46 |
+| 11 | 6.12 | 6.11 | 6.25 | 5.96 | 0.29 |
+| 13–15 | 6.33 | 6.11 | 6.25 | 5.96 | 0.37 |
+| 18 | 6.33 | 6.52 | 6.25 | 6.41 | 0.27 |
+| 22 | 6.33 | 6.95 | 6.91 | 6.41 | 0.62 |
+| 27+ | 7.96 | 6.95 | 7.93 | 6.41 | 1.55 |
+| **final RMS (stage 3)** | **0.125 s** | 0.130 s | 0.136 s | 0.128 s | |
+
+What the data constrain:
+
+* **The average velocity of the upper crust.** The models place their layer boundaries differently, but
+  the **vertical travel time from 0 to 10 km is 2.03–2.08 s in all four, and from 0 to 15 km it is
+  2.875–2.879 s**. In other words, 4.8–4.9 km/s averaged over the top 10 km and 5.2 km/s over the top
+  15 km.
+* **A slow near-surface layer, about 2–3 km thick.** Vertical travel time through the top 3 km is
+  0.76–0.83 s in all four models. Its velocity sits at the 3.5 km/s floor of the top layer in every run,
+  so the data would accept it even slower. That layer trades off with the station delays, so do not read
+  its exact velocity or thickness. If the shallow structure matters, test a lower `--vtop` (e.g. 3.0).
+* **About 5.5–5.7 km/s from ~3 to ~8 km, rising to 5.9–6.3 km/s by 9–13 km.**
+* **Not resolved below ~20 km.** Both kiratzi87 runs moved their 25–30 km layer to ~7.9 km/s, which merged
+  with the half-space at 24–25 km. The ionio runs keep 6.4–6.95 km/s down to their fixed 40 km Moho.
+  First arrivals within 125 km are crustal phases, so no Moho depth can be inferred.
+
+**Recommended model: kiratzi87, linear reading** (`results/ioannina/kiratzi87/model.mod`). It has the
+lowest RMS and the simplest layering, and it is stable in the stability test. Use the spread of the four
+models as the uncertainty.
+
+```
+ 3.50  -3.00 km   (dummy layer, station elevations)
+ 3.51   0.00 km
+ 5.51   2.78 km
+ 6.12   8.35 km
+ 6.33  12.91 km
+ 7.96  24.32 km   (half-space; not resolved)
+```
+
+### 5.2 Station delays
+
+![station delays](../results/ioannina/comparison/station_delays.png)
+
+The reference station is JAN, whose delay is 0 by definition. The pattern is consistent across the
+starting models:
+
+* **Negative delays** (faster than the model) at IGT, KSTR and TETR: −0.2 to −0.6 s.
+* **Positive delays** at LFKM (+0.3 to +0.6 s), NEST and the most distant stations, OTHN and KZN
+  (+0.3 to +1.5 s).
+* **Weakest at the distant stations:** their delays trade off with the unresolved deep structure, which
+  is why OTHN and KZN vary most between runs.
+* **Shift of the ionio layer-top run:** it carries a common shift of about −0.2 to −0.3 s at most stations.
+  That is the same trade-off, with its slower 3.5–11 km layer.
+
+The S delays VELEST applied are 1.82 × the P delays; see `stations.csv`.
+
+### 5.3 Relocations
+
+![seismicity before/after](../results/ioannina/comparison/seismicity_comparison.png)
+
+For the recommended model, inside the target box:
+
+* **Fit:** relocated RMS median 0.13 s, against a hypoSA median of 0.40 s.
+* **Free depths:** 6,977 of 9,526 events have a free depth (`depth_reliable`), with depths
+  3.2 / 7.6 / 14.4 km at the 10th / 50th / 90th percentile.
+* **Shape of the sequence:** it collapses into a narrow N–S zone at 20.62–20.65°E (39.55–39.72°N), mostly
+  2–13 km deep, plus a second cluster around 20.55°E / 39.66–39.72°N.
+
+The other three starting models give the same picture (median depth 7.1–9.2 km).
+
+`events.csv` flags depths that are not a free solution:
+
+* `at_layer_boundary`: within 0.1 km of a model layer top. VELEST hypocentres pile up there, about three
+  times more often than by chance.
+* `depth_error_near_zero`: erz < 0.5 km, meaning the depth was held.
+* `depth_not_adjusted`: one iteration only, or still at the 10 km start depth.
+* `at_surface`: depth below 0.05 km.
+
+`depth_reliable` is true only when none of these applies. VELEST's formal errors are large (median
+erh ≈ 4.0 km, erz ≈ 4.1 km), so use them to rank events, not as uncertainties.
+
+### 5.4 Stability test (stage 4)
+
+The test shifts the 500 events by N(0, 5 km) in each direction and re-inverts. The relocated events
+return to the reference positions:
+
+| start model | mean offset lat / lon / depth (km) | σ lat / lon / depth (km) |
+|---|---|---|
+| kiratzi87 linear | 0.06 / 0.04 / −0.06 | 0.27 / 0.14 / 1.67 |
+| ionio linear | 0.13 / 0.22 / −0.33 | 0.24 / 0.13 / 1.48 |
+| kiratzi87 layer-top | −0.13 / −0.06 / 0.09 | 0.21 / 0.12 / 1.25 |
+| ionio layer-top | 0.22 / 0.23 / −0.21 | 0.26 / 0.11 / 2.58 |
+
+Epicentres are stable to a few hundred metres. Depths are reproducible to about ±1.5–2.5 km, which is
+the realistic depth uncertainty for this network.
+
+---
+
+## 6. Caveats
+
+* **Depth resolution is limited.** The nearest station is ~21 km from the sequence. Take ±2 km from the
+  stability test as the depth uncertainty, and expect trade-offs between depth, origin time and the
+  shallow velocities.
+* **Lateral structure is averaged.** The rays cross different tectonic units (Ionian zone and the Pindus
+  front) on their way to stations up to 125 km away. The station delays absorb this lateral structure, so
+  they belong with the model and should not be used without it.
+* **The deep crust and the Moho are not constrained** (see §5.1).
+* **VELEST relocations are a by-product.** For the final catalogue, use the minimum 1-D model with the
+  station delays in your locator, as in the LOC-FLOW chain: HypoInverse or NonLinLoc, then hypoDD or
+  GrowClust. At minimum, filter `events.csv` on `depth_reliable`.
+* **Runs need separate directories.** Both configs write to `outputs/` and `figures/`, so use a separate
+  copy of the repository for each config.
+
+---
+
+## 7. What changed in the code
+
+**Input and configuration**
+
+* `tools/prepare_real_inputs.py` and `tools/nd_to_velest.py` (`--interp linear|step`, `--vtop`,
+  `--min-increment`, `--smooth`).
+* Event box (`EVENT_SELECTION`) separate from the station box (`STUDY_AREA`). Depth limits and a
+  minimum depth error for selection.
+* `RESELECTION` overrides for stages 2 and 5, and `PICK_WEIGHTS`.
+* Start depth for unconstrained catalogue depths.
+* A fixed reference station (`REFERENCE_STATION.code`), `n_jobs`, `velest_exec`, and
+  `fix_first_layer_bottom`.
+* The YAML keys now match the VELEST config fields. Five keys used to be ignored silently; unknown keys
+  are now errors.
+
+**Correctness fixes.** Three review rounds, each finding checked independently, found these. Those
+marked † were already in the original code and would affect other datasets too.
+
+* † **Ensemble averaging:** the run average used one global iteration or state type, which silently
+  dropped most inversions. Some stage-1 "averages" came from 2 of 50 models. Each inversion now
+  contributes its own final state.
+* † **Layer merging:** merges used chained 50/50 means; they now use the thickness-weighted slowness,
+  which preserves travel time.
+* † **Stage-1 damping:** 0.1 / 0.01 made up to 86 % of inversions stop with "error in (damped) matrix G",
+  and the average came from the survivors. It is now 1.0 / 0.1, and every inversion converges.
+* † **Silent failures:** a failed VELEST run could pass silently and leave results from an earlier run in
+  the average. Old outputs are now removed before each run, failures are reported, and only this run's
+  models are read.
+* † **Time parsing:** VELEST times with minute or second = 60 crashed the parser.
+* † **Station delays in relocation:** stages 2 and 5 relocated without the station delays.
+* † **P+S models:** reading and writing a model with an S part crashed.
+* † **Horizontal error filter:** `erh` was never read from Nordic input, so the filter did nothing.
+* **Stability-test reference:** stage 4 compared against stage-2 positions computed with a different
+  model; it now has an unperturbed reference run. Perturbed depths are no longer clipped to 0 km, which
+  had inflated the depth scatter.
+* **Pinned depths:** the start-depth fix for hypoSA's 0 km depths.
+* **Usable picks only:** station counts and gaps now count only stations with usable picks.
+* **S cards:** S continuation cards in VELEST output were parsed with distance and azimuth 0.
+* **Reselection crash:** reselection crashed when VELEST could not locate an event.
+* **`--stages`:** a partial run no longer deletes earlier stages.
+* **Product honesty:** the final products report the S delays and Vs that were actually used, and
+  `events.csv` carries the depth-quality flags.
+
+**Practical changes**
+
+* VELEST runs inside each model directory, with relative paths (it reads at most 80 characters per path),
+  so runs can go in parallel.
+* `pyvelest.py --config/--stages`.
+* `src/exc/build_velest.sh` builds VELEST with gfortran.
+
+---
+
+## 8. Open questions for you
+
+1. **`.nd` intent:** were `kiratzi87.nd` / `ionio.nd` meant as layer tops or as TauP gradients? If
+   layer tops, the travel-time tables REAL built from them were gradient models.
+2. **Mantle row:** what do you intend for the Moho and the "mantle" row at 70 km?
+3. **Magnitudes:** I used the magnitudes in `ioannina_final.txt` rather than REAL's. Is that right?
+4. **Unused stations:** do KBN, LSK and SRN have data? Adding picks from them would help depth
+   resolution: KBN and LSK are north of the sequence, SRN to its north-west.
