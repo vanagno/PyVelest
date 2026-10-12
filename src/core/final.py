@@ -86,16 +86,26 @@ def prepare_final_catalog(config):
     )
     events["at_surface"] = events["dep"] < 0.05
     threshold = config.INPUTS.unconstrained_depth_below_km
+    events["started_at_start_depth"] = False
     if threshold is not None and input_summary.exists():
         inp = read_csv(input_summary).dropna(subset=["ort"])
         shallow = set(inp.loc[inp["dep"] < threshold, "eid"].astype(int))
         events["started_at_start_depth"] = events["eid"].astype(int).isin(
             shallow
         )
+    # Depth VELEST never moved: a single iteration (no depth adjustment in
+    # VELEST's first single-event iteration), or still at start_depth_km.
+    events["depth_not_adjusted"] = (
+        events["started_at_start_depth"]
+        & ((events["dep"] - config.INPUTS.start_depth_km).abs() < 0.005)
+    )
+    if "nit" in events:
+        events["depth_not_adjusted"] |= events["nit"].fillna(99) <= 1
     events["depth_reliable"] = ~(
         events["at_layer_boundary"]
         | events["depth_error_near_zero"]
         | events["at_surface"]
+        | events["depth_not_adjusted"]
     )
     events.to_csv(events_outfile, index=False, float_format="%.4f")
     print(

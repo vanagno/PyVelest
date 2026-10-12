@@ -84,11 +84,11 @@ class Main:
         # diagnostic: a failed run is reported, not fatal.
         n_runs = self.config.STAGE_04.n_runs
         skipped = []
+        for old in Path("figures").glob("dislocation_*.png"):
+            old.unlink(missing_ok=True)
         for n in range(0, n_runs + 1):
             label = "reference run" if n == 0 else f"execution number {n}"
             print(f"+++ Stage_04 {label} ...")
-            figure = Path("figures") / f"dislocation_{n:02d}.png"
-            figure.unlink(missing_ok=True)
             prepare_station(self.config, stage_n=4, run_n=n)
             prepare_model(self.config, stage_n=4, run_n=n)
             prepare_catalog(self.config, stage_n=4, run_n=n)

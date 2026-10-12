@@ -543,7 +543,13 @@ def prepare_model(config, stage_n, run_n=None):
         seed = config.SYNTHETIC_MODELS.seed
         vmodel = read_vmodel(vmodel_input)
         vmodels = vmodel.generate_random_models(
-            n_models, velocity_std, depth_std, seed
+            n_models,
+            velocity_std,
+            depth_std,
+            seed,
+            fixed_top_depths=(
+                2 if config.SYNTHETIC_MODELS.fix_first_layer_bottom else 1
+            ),
         )
         for n_model, vmodel in enumerate(vmodels, 1):
             model_dir = run_dir / f"model_{n_model:02d}"
@@ -581,7 +587,13 @@ def prepare_model(config, stage_n, run_n=None):
         seed = config.SYNTHETIC_MODELS.seed
         vmodel = read_vmodel(vmodel_input)
         vmodels = vmodel.generate_random_models(
-            n_models, velocity_std, depth_std, seed
+            n_models,
+            velocity_std,
+            depth_std,
+            seed,
+            fixed_top_depths=(
+                2 if config.SYNTHETIC_MODELS.fix_first_layer_bottom else 1
+            ),
         )
         for n_model, vmodel in enumerate(vmodels, 1):
             model_dir = run_dir / f"model_{n_model:02d}"

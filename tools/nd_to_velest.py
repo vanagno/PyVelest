@@ -86,7 +86,9 @@ def build_model(
     if smooth > 1:
         # smooth below the first layer only (it may be a fixed dummy layer)
         body = v[1:]
-        padded = np.pad(body, (smooth // 2, smooth // 2), mode="edge")
+        padded = np.pad(
+            body, (smooth // 2, smooth - 1 - smooth // 2), mode="edge"
+        )
         v[1:] = np.convolve(padded, np.ones(smooth) / smooth, mode="valid")
     for i in range(1, len(v)):
         v[i] = max(v[i], v[i - 1] + min_increment)

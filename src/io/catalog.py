@@ -547,8 +547,14 @@ def add_statistics(line, header):
     ery = float(args[1])
     erz = float(args[2])
     erh = sqrt(erx**2 + ery**2)
+    # IT: VELEST iterations; in single-event mode the depth is not adjusted
+    # in the first iteration, so IT <= 1 leaves the start depth unchanged.
+    try:
+        nit = int(args[-1])
+    except ValueError:
+        nit = None
 
-    header.update({"erh": erh, "erz": erz})
+    header.update({"erh": erh, "erz": erz, "nit": nit})
     return header
 
 

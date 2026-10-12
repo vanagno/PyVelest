@@ -78,6 +78,9 @@ SYNTHETIC_MODELS:
   merging_threshold_km_s: 0.15
   first_layer_dmp: 50
   last_layer_dmp: 10
+  # The first layer (-3..0 km) is a fixed dummy layer for station
+  # elevations: keep its bottom at 0 km in the random models
+  fix_first_layer_bottom: true
 
 STAGE_01:
   n_runs: 5
