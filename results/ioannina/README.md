@@ -7,7 +7,7 @@ are in [`docs/ioannina_workflow.md`](../../docs/ioannina_workflow.md).
 |---|---|---|
 | `kiratzi87/` (recommended) | `kiratzi87.nd`, linear (TauP) reading | 0.125 s |
 | `ionio/` | `ionio.nd`, linear reading | 0.130 s |
-| `kiratzi87_step/` | `kiratzi87.nd`, rows read as layer tops | 0.136 s |
+| `kiratzi87_step/` | `kiratzi87.nd`, rows read as layer tops | 0.137 s |
 | `ionio_step/` | `ionio.nd`, rows read as layer tops | 0.128 s |
 
 Each folder contains:
@@ -21,4 +21,7 @@ Each folder contains:
 * `figures/`: the pipeline's own figures, downscaled.
 
 `comparison/` holds the cross-run figures. The phase-level relocations (`relocated.csv` / `.out`) are not
-committed; rerun stage 5 to regenerate them.
+committed. To regenerate them, run the pipeline with the matching config (`python pyvelest.py` or
+`python pyvelest.py --config configs/user_ionio.yaml`). `--stages 5` alone works only after stages 1–3 of
+the same run are in `outputs/`; the `outputs/` committed in the repository holds the original example
+run.

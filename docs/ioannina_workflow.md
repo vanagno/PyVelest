@@ -27,20 +27,25 @@ python tools/prepare_real_inputs.py \
     --sa-catalog "inputs/My inputs/ioannina/catalogSA_allday.txt" \
     --sa-phases "inputs/My inputs/ioannina/phaseSA_allday_kiratzi87.txt"
 
-# Starting models (already committed)
+# Starting models (already committed). Layer-top versions: add --interp step, --name KIRATZI87_STEP /
+# IONIO_STEP and --out inputs/vmodel_kiratzi87_step.dat / inputs/vmodel_ionio_step.dat
 python tools/nd_to_velest.py "inputs/My inputs/kiratzi87.nd" --tops -3 0 1 2 3 4 6 8 10 13 16 20 25 \
-    --moho 30 --vtop 3.5 --min-increment 0.05 --out inputs/vmodel_kiratzi87.dat           # add --interp step
+    --moho 30 --vtop 3.5 --min-increment 0.05 --name KIRATZI87_LINEAR --out inputs/vmodel_kiratzi87.dat
 python tools/nd_to_velest.py "inputs/My inputs/ionio.nd" --tops -3 0 1 2 3 4 6 8 10 13 16 20 25 30 35 \
-    --moho 40 --vtop 3.5 --min-increment 0.05 --out inputs/vmodel_ionio.dat               # for *_step.dat
+    --moho 40 --vtop 3.5 --min-increment 0.05 --name IONIO_LINEAR --out inputs/vmodel_ionio.dat
 
 # Run: one config per copy of the repository (all configs write to outputs/ and figures/)
 python pyvelest.py                                    # configs/user.yaml  (kiratzi87 start)
 python pyvelest.py --config configs/user_ionio.yaml   # ionio start
+#   layer-top starts: in a further copy set INPUTS.vmodel to inputs/vmodel_kiratzi87_step.dat
+#   (user.yaml) or inputs/vmodel_ionio_step.dat (user_ionio.yaml)
 python pyvelest.py --stages 5                         # redo single stages; earlier outputs are kept
 ```
 
-A full run is 5 × 50 + 5 × 25 VELEST inversions of 500 events. One inversion takes about 15 s, so a run
-takes about 60 min with `n_jobs: 1` and about 20 min with `n_jobs: 4`. The final products land in
+A full run is 5 × 50 + 5 × 25 = 375 VELEST inversions of 500 events. One inversion takes about 9 s, so a
+run takes about 60 min with `n_jobs: 1` and about 20 min with `n_jobs: 4`. `--stages 2..5` needs the
+earlier stages of the same run in `outputs/` (the `outputs/` committed in the repository is the original
+example run). The final products land in
 `outputs/stage_fn/`:
 
 * `model.mod` / `model.csv`: the minimum 1-D model (`model.csv` includes the Vs that was used).
@@ -74,9 +79,12 @@ Facts about the data that drive the settings:
   |---|---|---|---|---|---|
   | VELEST class | 0 | 1 | 2 | 3 | 4 (not used in inversions) |
   | share of P picks | 43 % | 22 % | 15 % | 13 % | 7 % |
-  | share of S picks | 7 % | 24 % | 30 % | 24 % | 15 % |
+  | share of S picks | 6 % | 24 % | 30 % | 24 % | 15 % |
 
-* **Vp/Vs = 1.82**, from a Wadati fit of 27k P–S pairs in the box; the median per-event slope is 1.83.
+* **Vp/Vs = 1.82**, from a Wadati fit of 27,432 P–S pairs in the box: (ts − tp) against tp with a free
+  intercept, using P picks with probability ≥ 0.70 and S picks with probability ≥ 0.55. The median of the
+  per-event slopes is 1.83. Without the probability filter, the estimate ranges from 1.79 to 1.84
+  depending on the fit.
   VELEST uses the S picks with this fixed ratio (`phase_mode: 3`), so the S delay of each station is
   1.82 × its P delay.
 
@@ -100,9 +108,9 @@ Common choices:
   1.13 km), it is heavily damped and it is never merged. When it differed between models it acted as a
   different velocity floor in each, because low-velocity layers are not allowed.
 * **Layering:** 1–2 km layers in the upper crust, 3–5 km deeper.
-* **Velocity steps:** every step is at least 0.05 km/s, so PyVelest's random-model generator stays
-  within ~0.06 km/s of the starting model. As a consequence the flat 6.0 km/s section of kiratzi87 starts
-  at 6.05–6.20.
+* **Velocity steps:** every step is at least 0.05 km/s (0.04 once in `vmodel_ionio.dat`, after rounding
+  to two decimals). This keeps the mean of PyVelest's random models within ~0.06 km/s of the starting
+  model. As a consequence the flat 6.0 km/s section of kiratzi87 (10–30 km) starts at 6.00–6.20.
 * **Moho:** at 30 km (kiratzi87) / 40 km (ionio), with 8.0 km/s below. Your files put the first
   "mantle" row at 70 km, which a TauP reader turns into a 6→8 km/s gradient; that cannot be expressed in
   VELEST, and this geometry does not resolve it anyway (§6).
@@ -149,7 +157,7 @@ km/s at each depth):
 | 18 | 6.33 | 6.52 | 6.25 | 6.41 | 0.27 |
 | 22 | 6.33 | 6.95 | 6.91 | 6.41 | 0.62 |
 | 27+ | 7.96 | 6.95 | 7.93 | 6.41 | 1.55 |
-| **final RMS (stage 3)** | **0.125 s** | 0.130 s | 0.136 s | 0.128 s | |
+| **final RMS (stage 3)** | **0.125 s** | 0.130 s | 0.137 s | 0.128 s | |
 
 What the data constrain:
 
@@ -188,7 +196,7 @@ starting models:
 
 * **Negative delays** (faster than the model) at IGT, KSTR and TETR: −0.2 to −0.6 s.
 * **Positive delays** at LFKM (+0.3 to +0.6 s), NEST and the most distant stations, OTHN and KZN
-  (+0.3 to +1.5 s).
+  (+0.2 to +1.5 s).
 * **Weakest at the distant stations:** their delays trade off with the unresolved deep structure, which
   is why OTHN and KZN vary most between runs.
 * **Shift of the ionio layer-top run:** it carries a common shift of about −0.2 to −0.3 s at most stations.
@@ -212,8 +220,8 @@ The other three starting models give the same picture (median depth 7.1–9.2 km
 
 `events.csv` flags depths that are not a free solution:
 
-* `at_layer_boundary`: within 0.1 km of a model layer top. VELEST hypocentres pile up there, about three
-  times more often than by chance.
+* `at_layer_boundary`: within 0.1 km of a model layer top. VELEST hypocentres pile up there, several times
+  more often than by chance: 23 % of the box events for the recommended model, against ~3–5 % expected.
 * `depth_error_near_zero`: erz < 0.5 km, meaning the depth was held.
 * `depth_not_adjusted`: one iteration only, or still at the 10 km start depth.
 * `at_surface`: depth below 0.05 km.
