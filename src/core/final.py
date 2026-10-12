@@ -69,9 +69,12 @@ def prepare_final_catalog(config):
         columns=["sta", "dis", "azm", "pha", "wet", "ptt", "res"],
         errors="ignore",
     )
+    # VELEST hypocentres pile up within ~0.1 km of layer boundaries (several
+    # times the share expected by chance); flag them. Some events there are
+    # genuine, so the flag is conservative.
     tops = [layer.depth for layer in read_vmodel(model_file).layers_vp]
     events["at_layer_boundary"] = events["dep"].apply(
-        lambda d: any(abs(d - top) < 0.02 for top in tops)
+        lambda d: any(abs(d - top) < 0.1 for top in tops)
     )
     min_erz = (
         config.RESELECTION.min_depth_error_km
