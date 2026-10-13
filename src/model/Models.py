@@ -72,6 +72,23 @@ class EVENT_SELECTION_(BaseModel):
     max_rms_sec: Optional[float] = Field(default=None, ge=0.0)
     max_gap_deg: Optional[float] = Field(default=None, ge=0.0)
     min_used_stations: Optional[int] = Field(default=None, ge=0)
+    # High-quality P arrivals: P picks with weight class <= hq_p_max_class
+    # (with PICK_WEIGHTS: class 0 = probability >= 0.85, class 1 >= 0.70).
+    # n_hq_p = stations with such a P pick; gap_hq_p = their azimuthal gap.
+    hq_p_max_class: int = Field(default=1, ge=0, le=4)
+    min_hq_p_stations: Optional[int] = Field(default=None, ge=0)
+    max_hq_p_gap_deg: Optional[float] = Field(default=None, ge=0.0)
+    # Order of preference among candidates (column names; "-" = descending),
+    # applied within each grid cell, or to all candidates when
+    # spatial_balance is false.
+    rank_by: list[str] = Field(
+        default_factory=lambda: ["rms", "erh", "erz", "gap", "-mag"]
+    )
+    spatial_balance: bool = True
+    # Keep events whose catalog depth is unconstrained (shallower than
+    # INPUTS.unconstrained_depth_below_km); they are treated as being at
+    # INPUTS.start_depth_km, where VELEST starts them.
+    include_unconstrained_depths: bool = False
 
 
 class RESELECTION_(BaseModel):
@@ -85,6 +102,9 @@ class RESELECTION_(BaseModel):
     max_rms_sec: Optional[float] = Field(default=None, ge=0.0)
     max_gap_deg: Optional[float] = Field(default=None, ge=0.0)
     min_used_stations: Optional[int] = Field(default=None, ge=0)
+    min_hq_p_stations: Optional[int] = Field(default=None, ge=0)
+    max_hq_p_gap_deg: Optional[float] = Field(default=None, ge=0.0)
+    rank_by: Optional[list[str]] = None
     min_depth_km: Optional[float] = None
     max_depth_km: Optional[float] = None
     max_events: Optional[int] = Field(default=None, ge=1)

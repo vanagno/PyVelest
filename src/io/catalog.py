@@ -85,6 +85,34 @@ def azimuthal_gap(azimuths):
     return max(gaps)
 
 
+def phase_quality(phases, hq_p_max_class=1):
+    """Per-event arrival statistics from (sta, pha, wet, azm) tuples.
+
+    n_p / n_s: stations with a usable (class < 4) P / S pick;
+    n_hq_p: stations with a P pick of class <= hq_p_max_class;
+    gap_hq_p: azimuthal gap of those stations (360 if fewer than two).
+    """
+    p, s, hq = set(), set(), {}
+    for sta, pha, wet, azm in phases:
+        try:
+            wet = int(wet)
+        except (TypeError, ValueError):
+            continue
+        pha = str(pha).upper()
+        if wet < 4 and pha.startswith("P"):
+            p.add(sta)
+        if wet < 4 and pha.startswith("S"):
+            s.add(sta)
+        if wet <= hq_p_max_class and pha.startswith("P"):
+            hq[sta] = azm
+    return {
+        "n_p": len(p),
+        "n_s": len(s),
+        "n_hq_p": len(hq),
+        "gap_hq_p": azimuthal_gap(hq.values()),
+    }
+
+
 def station_coordinates(config):
     """{code: (lat, lon)} of the stations inside STUDY_AREA."""
     stations_df = read_station(config, config.INPUTS.stations)
@@ -214,6 +242,15 @@ def summarize_catalog(config):
             "erh": erh,
             "erz": erz,
         }
+        event_info.update(
+            phase_quality(
+                (
+                    (ph["sta"], ph["pha"], ph["wet"], ph["azm"])
+                    for ph in phase_info
+                ),
+                config.EVENT_SELECTION.hq_p_max_class,
+            )
+        )
         phase_info.append(event_info)
         data.extend(phase_info)
     cat_df = DataFrame(data)
@@ -222,7 +259,12 @@ def summarize_catalog(config):
 
 
 def select(
-    config, catalog, catalog_sum_file, select_cat_outfile, select_csv_outfile
+    config,
+    catalog,
+    catalog_sum_file,
+    select_cat_outfile,
+    select_csv_outfile,
+    from_input_catalog=False,
 ):
 
     # process
@@ -240,6 +282,13 @@ def select(
     event_by_eid = dict(zip(all_eids, catalog))
 
     es, sa = config.EVENT_SELECTION, config.STUDY_AREA
+
+    # Events with an unconstrained input depth enter VELEST at
+    # start_depth_km (catalog_to_cnv); optionally select them as if there.
+    threshold = config.INPUTS.unconstrained_depth_below_km
+    if from_input_catalog and es.include_unconstrained_depths and threshold:
+        df["dep_input"] = df["dep"]
+        df.loc[df["dep"] < threshold, "dep"] = config.INPUTS.start_depth_km
 
     def bound(value, fallback):
         return fallback if value is None else value
@@ -269,6 +318,23 @@ def select(
             df[column] <= limit if operator == "le" else df[column] >= limit
         )
         mask &= comparison | df[column].isna()
+
+    # High-quality P arrivals; a missing value fails these limits.
+    hq_limits = (
+        ("n_hq_p", es.min_hq_p_stations, "ge"),
+        ("gap_hq_p", es.max_hq_p_gap_deg, "le"),
+    )
+    for column, limit, operator in hq_limits:
+        if limit is None:
+            continue
+        if column not in df:
+            raise ValueError(
+                f"{catalog_sum_file} has no '{column}' column; rebuild it "
+                "with this version of PyVelest"
+            )
+        mask &= (
+            df[column] <= limit if operator == "le" else df[column] >= limit
+        ).fillna(False)
 
     filtered = df[mask].copy()
     if filtered.empty:
@@ -578,7 +644,7 @@ def add_phase_info(line):
     return data
 
 
-def summarize_single_events(single_events_file, sum_outfile):
+def summarize_single_events(single_events_file, sum_outfile, hq_p_max_class=1):
     events_df = []
     header = {}
     phases = []
@@ -646,12 +712,33 @@ def summarize_single_events(single_events_file, sum_outfile):
         events_df.loc[is_header, "gap"] = (
             events_df.loc[is_header, "eid"].map(u_gap).fillna(360.0)
         )
+        # n_p, n_s, n_hq_p, gap_hq_p as in summarize_catalog
+        phases = events_df.dropna(subset=["sta"])
+        quality = DataFrame.from_dict(
+            {
+                eid: phase_quality(
+                    zip(g["sta"], g["pha"], g["wet"], g["azm"]), hq_p_max_class
+                )
+                for eid, g in phases.groupby("eid")
+            },
+            orient="index",
+        )
+        for column in ("n_p", "n_s", "n_hq_p", "gap_hq_p"):
+            fill = 360.0 if column == "gap_hq_p" else 0
+            values = quality[column] if column in quality else {}
+            events_df.loc[is_header, column] = (
+                events_df.loc[is_header, "eid"].map(values).fillna(fill)
+            )
     events_df.to_csv(sum_outfile, index=False, float_format="%.3f")
     return events_df
 
 
-def convert_single_events(single_events_file, cat_outfile, sum_outfile):
-    events_df = summarize_single_events(single_events_file, sum_outfile)
+def convert_single_events(
+    single_events_file, cat_outfile, sum_outfile, hq_p_max_class=1
+):
+    events_df = summarize_single_events(
+        single_events_file, sum_outfile, hq_p_max_class
+    )
     catalog = make_catalog(events_df)
     catalog.write(
         cat_outfile, format="NORDIC", high_accuracy=False, nordic_format="OLD"
@@ -711,7 +798,10 @@ def reselect_best(config, stage_n):
     select_csv_outfile = rootpath / "select.csv"
 
     cat_rel = convert_single_events(
-        single_events_file, cat_rel_outfile, cat_sum_outfile
+        single_events_file,
+        cat_rel_outfile,
+        cat_sum_outfile,
+        config.EVENT_SELECTION.hq_p_max_class,
     )
 
     # Location errors and residuals now come from VELEST: apply the
@@ -806,6 +896,7 @@ def prepare_catalog(config, cat_inp=None, stage_n=1, run_n=None):
             catalog_csv_inpfile,
             select_cat_outfile,
             select_csv_outfile,
+            from_input_catalog=True,
         )
         catalog_to_cnv(
             cat_sel,

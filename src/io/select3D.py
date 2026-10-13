@@ -54,13 +54,29 @@ def select_events_3d(df: DataFrame, config) -> DataFrame:
     )
 
     # -------------------------------------------------------------
-    # rank events inside each cell
-    # best quality first
+    # rank events (best first) by EVENT_SELECTION.rank_by:
+    # column names, "-" prefix = descending; missing values last
     # -------------------------------------------------------------
-    sort_cols = ["rms", "erh", "erz", "gap", "mag"]
-    ascending = [True, True, True, True, False]
+    sort_cols, ascending = [], []
+    for key in config.EVENT_SELECTION.rank_by:
+        column = key.lstrip("-")
+        if column not in df:
+            raise ValueError(
+                f"EVENT_SELECTION.rank_by: unknown column '{column}' "
+                f"(available: {', '.join(sorted(df.columns))})"
+            )
+        sort_cols.append(column)
+        ascending.append(not key.startswith("-"))
 
-    df = df.sort_values(sort_cols, ascending=ascending)
+    df = df.sort_values(sort_cols, ascending=ascending, na_position="last")
+
+    if not config.EVENT_SELECTION.spatial_balance:
+        return (
+            df.head(config.EVENT_SELECTION.max_events)
+            .drop(columns=["ilat", "ilon", "idep"])
+            .sort_values("eid")
+            .reset_index(drop=True)
+        )
 
     groups = {
         key: grp.copy()
