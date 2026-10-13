@@ -135,6 +135,48 @@ Other settings, in all stages:
 * Maximum epicentral distance: 150 km.
 * `phase_mode: 3`, Vp/Vs 1.82.
 
+### 4.1 High-quality event selection
+
+`configs/user_hq500.yaml` and `configs/user_hq1000.yaml` (kiratzi87 start) choose events by the quality of
+their P arrivals instead of the standard limits:
+
+```sh
+python pyvelest.py --config configs/user_hq500.yaml    # >= 8 high-quality P stations, P gap <= 150 deg
+python pyvelest.py --config configs/user_hq1000.yaml   # >= 7 high-quality P stations, P gap <= 150 deg
+```
+
+To start from ionio, set `INPUTS.vmodel: inputs/vmodel_ionio.dat`. Run each config in its own copy of the
+repository.
+
+**Settings in `EVENT_SELECTION`**
+
+| key | meaning |
+|---|---|
+| `hq_p_max_class: 1` | a high-quality P pick has weight class ≤ 1, i.e. PhaseNet probability ≥ 0.70 |
+| `min_hq_p_stations` | minimum number of stations with a high-quality P pick (`n_hq_p`) |
+| `max_hq_p_gap_deg` | maximum azimuthal gap of those stations (`gap_hq_p`) |
+| `rank_by: ["-n_hq_p", "gap_hq_p", "rms"]` | preference order; a `-` prefix means descending |
+| `spatial_balance` | `true`: take the best events from each cell of the 3-D grid in turn; `false`: take the top `max_events` overall |
+| `include_unconstrained_depths: true` | keep the events hypoSA pinned at 0 km and select them as if at `start_depth_km` |
+
+**Event counts in the target box**
+
+* **Stage 1:** 601 events pass the 500-event limits and 1,028 pass the 1,000-event limits.
+* **Pinned events:** about two thirds of these high-quality events were pinned at 0 km by hypoSA, so the
+  standard selection would drop them. That is why `include_unconstrained_depths` is on.
+* **RMS limit:** the hypoSA RMS of these events is high (median about 0.5 s), so stage 1 only removes
+  outliers above 0.8 s.
+* **Stage-2 reselection:** the same high-quality limits are applied to VELEST's relocations, together with
+  RMS ≤ 0.3 s and erz ≥ 0.5 km. VELEST's formal erh/erz limits are not used. With the stage-1 model of the
+  standard run, about 550 and 950 events pass.
+
+`events.csv` also carries `n_p`, `n_s`, `n_hq_p` and `gap_hq_p`, so the final relocations can be filtered
+the same way.
+
+**Run time.** One inversion with 1,000 events takes about five times as long as with 500 (about 55 s
+against 9 s), because VELEST's matrix grows with the square of the number of events. A full 1,000-event
+run is about 5.5 CPU-hours, or about 1.5 hours with `n_jobs: 4`.
+
 ---
 
 ## 5. Results
