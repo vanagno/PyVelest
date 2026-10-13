@@ -265,6 +265,8 @@ class LAYER(BaseModel):
 class VMODEL(BaseModel):
     """VELEST velocity model"""
 
+    model_config = ConfigDict(protected_namespaces=())
+
     model_name: Optional[str] = Field(default="VELEST MODEL")
     n_layers: int = Field(ge=2)
     layers_vp: list[LAYER] = Field(default_factory=list)

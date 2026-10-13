@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+import os
 from pathlib import Path
 from subprocess import run
 
@@ -37,6 +38,13 @@ def _velest_exec(config) -> Path:
         raise FileNotFoundError(
             f"VELEST executable not found: {exe} "
             "(build one with src/exc/build_velest.sh)"
+        )
+    if not os.access(exe, os.X_OK):
+        raise PermissionError(
+            f"VELEST executable is not executable: {exe}\n"
+            f"    run: chmod +x {exe}\n"
+            "    (or build one with src/exc/build_velest.sh and set "
+            "GLOBAL_SETTINGS.velest_exec)"
         )
     return exe
 
