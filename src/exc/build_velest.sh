@@ -7,6 +7,13 @@
 #   sh src/exc/build_velest.sh my_velest  # -> src/exc/my_velest
 set -e
 cd "$(dirname "$0")"
+out="${1:-velest_gfortran}"
+rm -f "$out"
 gfortran -O2 -std=legacy -ffixed-line-length-none -fno-automatic \
-    velest.f -o "${1:-velest_gfortran}"
-echo "built $(pwd)/${1:-velest_gfortran}"
+    velest.f -o "$out"
+if [ -x "$out" ]; then
+    echo "built $(pwd)/$out"
+else
+    echo "build failed: $out was not created" >&2
+    exit 1
+fi
