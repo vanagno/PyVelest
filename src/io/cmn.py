@@ -30,6 +30,43 @@ def _path(value, workdir: Path) -> str:
     return name
 
 
+def read_velest_config(config, stage_n: int) -> VELEST_CONFIG:
+    """``configs/stage_0N/velest.yaml`` with the dataset settings applied.
+
+    VELEST_SETTINGS of the user config take precedence over the stage file;
+    an origin given in neither is the centre of the EVENT_SELECTION box
+    (bounds left out fall back to STUDY_AREA).
+    """
+    with open(Path("configs") / f"stage_{stage_n:02d}" / "velest.yaml") as f:
+        velest = VELEST_CONFIG.model_validate(yaml.safe_load(f))
+
+    vs = config.VELEST_SETTINGS
+    es, sa = config.EVENT_SELECTION, config.STUDY_AREA
+
+    def centre(lo, hi, lo_fallback, hi_fallback):
+        lo = lo_fallback if lo is None else lo
+        hi = hi_fallback if hi is None else hi
+        return (lo + hi) / 2.0
+
+    c = velest.COORDINATE_SYSTEM
+    if vs.origin_lat is not None:
+        c.origin_latitude = vs.origin_lat
+    elif c.origin_latitude is None:
+        c.origin_latitude = centre(
+            es.min_lat, es.max_lat, sa.min_lat, sa.max_lat
+        )
+    # VELEST counts East longitudes as negative
+    if vs.origin_lon is not None:
+        c.origin_longitude = -vs.origin_lon
+    elif c.origin_longitude is None:
+        c.origin_longitude = -centre(
+            es.min_lon, es.max_lon, sa.min_lon, sa.max_lon
+        )
+    if vs.vp_vs_ratio is not None:
+        velest.VELOCITY.vp_vs_ratio = vs.vp_vs_ratio
+    return velest
+
+
 def write_cmn(config: VELEST_CONFIG, outfile: Path):
     """Write ``velest.cmn``; VELEST must later run in ``outfile.parent``."""
 
@@ -267,19 +304,24 @@ def prepare_cmn(config, stage_n, run_n=None):
 
         # inputs
         events_input = root / "select.csv"
-        cmn_input = Path("configs") / "stage_01" / "velest.yaml"
 
         # outputs
         run_dir = root / f"run_{run_n:02d}"
 
         # process
         events_df = read_csv(events_input)
+        if run_n == 1:
+            v = read_velest_config(config, 1)
+            c = v.COORDINATE_SYSTEM
+            print(
+                f"+++ VELEST origin: lat {c.origin_latitude:.4f}, lon "
+                f"{-c.origin_longitude:.4f} (East positive); "
+                f"Vp/Vs {v.VELOCITY.vp_vs_ratio:.3f}"
+            )
         for n_model in range(1, config.SYNTHETIC_MODELS.n_models + 1):
             model_dir = run_dir / f"model_{n_model:02d}"
             cmnout = model_dir / "velest.cmn"
-            with open(cmn_input) as f:
-                data = yaml.safe_load(f)
-            VelestConfig = VELEST_CONFIG.model_validate(data)
+            VelestConfig = read_velest_config(config, 1)
             VelestConfig.DATASET.number_of_earthquakes = len(events_df)
             VelestConfig.INPUT_FILE.velocity_model = model_dir / "model.mod"
             VelestConfig.INPUT_FILE.stations = root / "stations.sta"
@@ -298,14 +340,11 @@ def prepare_cmn(config, stage_n, run_n=None):
         
         # inputs
         events_input = rootout / "original.csv"
-        cmn_input = Path("configs") / "stage_02" / "velest.yaml"
 
         # outputs
         cmnout = rootout / "velest.cmn"
         events_df = read_csv(events_input)
-        with open(cmn_input) as f:
-            data = yaml.safe_load(f)
-        VelestConfig = VELEST_CONFIG.model_validate(data)
+        VelestConfig = read_velest_config(config, 2)
         VelestConfig.DATASET.number_of_earthquakes = len(events_df)
         VelestConfig.INPUT_FILE.velocity_model = rootout / "model.mod"
         VelestConfig.INPUT_FILE.stations = rootout / "stations.sta"
@@ -323,7 +362,6 @@ def prepare_cmn(config, stage_n, run_n=None):
 
         # inputs
         
-        cmn_input = Path("configs") / "stage_03" / "velest.yaml"
 
         # outputs
 
@@ -334,9 +372,7 @@ def prepare_cmn(config, stage_n, run_n=None):
             cmnout = model_dir / "velest.cmn"
             events_input =  Path("outputs/stage_02") / "select.csv"
             events_df = read_csv(events_input)
-            with open(cmn_input) as f:
-                data = yaml.safe_load(f)
-            VelestConfig = VELEST_CONFIG.model_validate(data)
+            VelestConfig = read_velest_config(config, 3)
             VelestConfig.DATASET.number_of_earthquakes = len(events_df)
             VelestConfig.INPUT_FILE.velocity_model = model_dir / "model.mod"
             VelestConfig.INPUT_FILE.stations = model_dir / "stations.sta"
@@ -355,7 +391,6 @@ def prepare_cmn(config, stage_n, run_n=None):
 
         # inputs
         
-        cmn_input = Path("configs") / "stage_04" / "velest.yaml"
 
         # outputs
 
@@ -364,9 +399,7 @@ def prepare_cmn(config, stage_n, run_n=None):
         cmnout = run_dir / "velest.cmn"
         events_input =  run_dir / "perturb.csv"
         events_df = read_csv(events_input)
-        with open(cmn_input) as f:
-            data = yaml.safe_load(f)
-        VelestConfig = VELEST_CONFIG.model_validate(data)
+        VelestConfig = read_velest_config(config, 4)
         VelestConfig.DATASET.number_of_earthquakes = len(events_df)
         VelestConfig.INPUT_FILE.velocity_model = run_dir / "model.mod"
         VelestConfig.INPUT_FILE.stations = run_dir / "stations.sta"
@@ -385,14 +418,11 @@ def prepare_cmn(config, stage_n, run_n=None):
         
         # inputs
         events_input = rootout / "original.csv"
-        cmn_input = Path("configs") / "stage_05" / "velest.yaml"
 
         # outputs
         cmnout = rootout / "velest.cmn"
         events_df = read_csv(events_input)
-        with open(cmn_input) as f:
-            data = yaml.safe_load(f)
-        VelestConfig = VELEST_CONFIG.model_validate(data)
+        VelestConfig = read_velest_config(config, 5)
         VelestConfig.DATASET.number_of_earthquakes = len(events_df)
         VelestConfig.INPUT_FILE.velocity_model = rootout / "model.mod"
         VelestConfig.INPUT_FILE.stations = rootout / "stations.sta"

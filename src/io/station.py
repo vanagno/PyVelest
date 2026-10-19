@@ -457,11 +457,13 @@ def finalized_inverted_stations(config, stage_n, run_n):
         n_models = config.STAGE_03.n_models
 
     run_dir = root / f"run_{run_n:02d}"
-    # Only this run's models, and only those VELEST finished.
+    # Only this run's models, and only those VELEST finished: the same
+    # inversions as the model average (those with a velocity_summary.csv).
     osta_files = [
         run_dir / f"model_{n:02d}" / "velout.sta"
         for n in range(1, n_models + 1)
         if (run_dir / f"model_{n:02d}" / "velout.sta").exists()
+        and (run_dir / f"model_{n:02d}" / "velocity_summary.csv").exists()
     ]
 
     # outputs

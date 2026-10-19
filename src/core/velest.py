@@ -83,7 +83,9 @@ def _execute(exe: Path, workdir: Path, single_event: bool = False) -> str | None
     return None
 
 
-def _execute_and_parse(exe: Path, workdir: Path) -> str | None:
+def _execute_and_parse(
+    exe: Path, workdir: Path, need_velocity: bool = False
+) -> str | None:
     error = _execute(exe, workdir)
     if error:
         return error
@@ -93,6 +95,13 @@ def _execute_and_parse(exe: Path, workdir: Path) -> str | None:
             results[key].to_csv(workdir / name, index=False)
     except Exception as exc:  # parsing problems must not pass silently
         return f"could not parse velout.inv: {exc}"
+    if need_velocity and results["velocity_states"].empty:
+        # VELEST rejected every step of an early iteration and stopped
+        # before adjusting the velocities: the model is still the random
+        # start. Without velocity_summary.csv the inversion is left out of
+        # the averages of models and station delays.
+        (workdir / PARSED_OUTPUTS["velocity_states"]).unlink()
+        return "stopped before its first velocity adjustment (model unchanged)"
     return None
 
 
@@ -103,7 +112,10 @@ def _run_many(config, workdirs):
     with ThreadPoolExecutor(max_workers=n_jobs) as pool:
         errors = list(
             tqdm(
-                pool.map(lambda d: _execute_and_parse(exe, d), workdirs),
+                pool.map(
+                    lambda d: _execute_and_parse(exe, d, need_velocity=True),
+                    workdirs,
+                ),
                 total=len(workdirs),
                 desc=desc,
             )

@@ -1,0 +1,149 @@
+INPUTS:
+  # Built with tools/prepare_real_inputs.py from the REAL outputs (REAL
+  # hypocentres with --real-catalog, or hypoSA's with --sa-catalog)
+  catalog: inputs/Evia/catalog.pha
+  stations: inputs/Evia/stations.csv
+  vmodel: inputs/ganas14.dat
+  # REAL (and hypoSA) put about half of the events at exactly 0 km; VELEST
+  # starts those at start_depth_km (a relocation started at 0 km stays
+  # shallow)
+  unconstrained_depth_below_km: 0.1
+  start_depth_km: 13.0
+
+# Stations used: only picks at stations inside this box are read. It must
+# hold the whole network (the 23 stations of inputs/Evia/stations.csv span
+# 38.03-39.37N, 22.34-24.56E), not just the target area. Events are selected
+# from the box in EVENT_SELECTION.
+STUDY_AREA:
+  min_lat: 37.90
+  max_lat: 39.50
+  min_lon: 22.20
+  max_lon: 24.70
+  lat_hemisphere: N
+  lon_hemisphere: E
+
+EVENT_SELECTION:
+  # Target area
+  min_lat: 38.59
+  max_lat: 38.83
+  min_lon: 23.21
+  max_lon: 23.62
+  # High-quality selection: events with many high-quality P arrivals and a
+  # small azimuthal gap of those stations, best first. Events at 0 km are
+  # kept: VELEST starts them at INPUTS.start_depth_km, and they are placed
+  # on the selection grid at that depth.
+  include_unconstrained_depths: true
+  hq_p_max_class: 1            # P probability >= 0.70 (classes 0-1)
+  min_hq_p_stations: 5
+  max_hq_p_gap_deg: 150
+  rank_by: ["-n_hq_p", "gap_hq_p", "rms"]
+  spatial_balance: true
+  min_depth_km: 0.1
+  max_events: 3000
+  cell_count_lat: 6
+  cell_count_lon: 6
+  cell_count_depth: 6
+  # Applied to the input catalog (stage 1). REAL and hypoSA give no location
+  # errors; only gross RMS outliers are removed here. The RMS is 0 (no
+  # limit) when the catalog was built without --real-catalog/--sa-catalog.
+  max_horizontal_error_km:
+  max_depth_error_km:
+  max_rms_sec: 0.8
+  max_gap_deg: 180
+  min_used_stations:
+
+# Overrides of EVENT_SELECTION for the reselection after the VELEST
+# relocations (stages 2 and 5). Depth errors near 0 mean the hypocentre is
+# stuck on a layer boundary (depth not free): those events are dropped.
+# The high-quality criteria above also apply here (recomputed from VELEST's
+# relocations); VELEST's formal erh/erz are not used as limits.
+RESELECTION:
+  min_depth_error_km: 0.5
+  max_rms_sec: 0.3
+  # Relocations shallower than 1 km made the first (hypocentre-only) step of
+  # most stage-3 inversions diverge: in a test run 5 of 8 stopped before any
+  # velocity update with 0.1 km, none with 1 km.
+  min_depth_km: 1.0
+
+REFERENCE_STATION:
+  phase_count_weight: 0.45
+  residual_weight: 0.35
+  distance_weight: 0.20
+  # Leave empty to use the best-scoring station
+  code:
+
+# PhaseNet probability (weight column of catalog.pha) -> VELEST weight
+# class 0..4. Class 4 is dropped from the simultaneous inversions and gets
+# a weight of 1/256 in the single-event relocations (stages 2 and 5).
+PICK_WEIGHTS:
+  enabled: true
+  probability_thresholds: [0.85, 0.70, 0.55, 0.40]
+
+SYNTHETIC_MODELS:
+  n_models: 50
+  # The generator perturbs velocity steps and rejects steps < 0.01 km/s, so
+  # small steps bias the ensemble. With 0.05 and the starting models from
+  # tools/nd_to_velest.py (--min-increment 0.05) the ensemble mean stays
+  # within ~0.06 km/s of the starting model.
+  velocity_std: 0.05
+  depth_std: 0.5
+  seed: 1
+  merging_threshold_km_s: 0.01
+  first_layer_dmp: 50
+  last_layer_dmp: 10
+  # The first layer (-3..0 km) is a fixed dummy layer for station
+  # elevations: keep its bottom at 0 km in the random models
+  fix_first_layer_bottom: true
+
+STAGE_01:
+  n_runs: 5
+
+STAGE_02:
+  n_runs: 5
+
+STAGE_03:
+  n_runs: 5
+  n_models: 25
+
+STAGE_04:
+  n_runs: 5
+  dx_km: 5.0
+  dy_km: 5.0
+  dz_km: 5.0
+  seed: 1
+
+# Applied to configs/stage_0X/velest.yaml in every stage
+VELEST_SETTINGS:
+  # Empty: the centre of the EVENT_SELECTION box (38.71N, 23.415E)
+  origin_lat:
+  origin_lon:
+  # Wadati (ts against tp per event, events in the target box with >= 5 P-S
+  # pairs, P probability >= 0.70, S >= 0.55): median 1.71 over 2,178
+  # events (1.68-1.73 for other probability limits). The stage files hold
+  # the Ioannina value, 1.82.
+  vp_vs_ratio: 1.71
+
+REPORT_SETTINGS:
+  report_on: false
+
+FIGURE_SETTINGS:
+  # Seismicity map
+  min_sei_lat: 38.59
+  max_sei_lat: 38.83
+  min_sei_lon: 23.21
+  max_sei_lon: 23.62
+  min_sei_depth: 0.0
+  max_sei_depth: 35.0
+  # Velocity maps
+  min_vel_vp: 3.0
+  max_vel_vp: 8.5
+  min_vel_depth: 0.0
+  max_vel_depth: 45.0
+
+GLOBAL_SETTINGS:
+  # Deletes everything under outputs/ and figures/ at start-up of a run
+  # that includes stage 1 (runs with --stages 2..5 keep earlier outputs).
+  clean_workspace: true
+  # VELEST runs executed in parallel in stages 1 and 3
+  n_jobs: 12
+  velest_exec: src/exc/velest_gfortran

@@ -1,16 +1,14 @@
 from src.io.model import read_vmodel, write_vmodel
 from src.io.station import read_vstation
-from src.model.Models import VELEST_CONFIG
+from src.io.cmn import read_velest_config
 from pathlib import Path
 from pandas import DataFrame, read_csv
 from shutil import copy
-import yaml
 
 
-def _stage05_velocity():
+def _stage05_velocity(config):
     """VELOCITY section of the stage-5 VELEST config (phase mode, Vp/Vs)."""
-    with open(Path("configs") / "stage_05" / "velest.yaml") as f:
-        return VELEST_CONFIG.model_validate(yaml.safe_load(f)).VELOCITY
+    return read_velest_config(config, 5).VELOCITY
 
 
 def prepare_final_model(config):
@@ -28,7 +26,7 @@ def prepare_final_model(config):
     vmodel = read_vmodel(vmodel_inpfile)
     write_vmodel(vmodel, vmodel_outfile)
 
-    velocity = _stage05_velocity()
+    velocity = _stage05_velocity(config)
     vp = [layer.vel for layer in vmodel.layers_vp]
     if vmodel.layers_vs:
         vs = [layer.vel for layer in vmodel.layers_vs]
@@ -130,7 +128,7 @@ def prepare_final_stations(config):
 
     stations_df = DataFrame([i.dict() for i in vstations.stations])
 
-    velocity = _stage05_velocity()
+    velocity = _stage05_velocity(config)
     if velocity.phase_mode == 3:
         # VELEST inverts only P delays here and applies S delay =
         # P delay * Vp/Vs (velest.f, nsp=3); report the S delay it applied.

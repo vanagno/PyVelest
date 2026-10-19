@@ -224,6 +224,19 @@ class FIGURE_SETTINGS_(BaseModel):
     max_vel_depth: float = Field(default=45.0, le=99.9)
 
 
+class VELEST_SETTINGS_(BaseModel):
+    """Dataset-specific VELEST settings, applied to the stage files
+    (configs/stage_0X/velest.yaml) in every stage. Values left empty keep
+    what the stage files say."""
+
+    # Origin of VELEST's Cartesian frame (decimal degrees, East positive as
+    # elsewhere in this file). Empty: the centre of the EVENT_SELECTION box,
+    # unless the stage files give one.
+    origin_lat: Optional[float] = Field(default=None, ge=-90.0, le=90.0)
+    origin_lon: Optional[float] = Field(default=None, ge=-180.0, le=180.0)
+    vp_vs_ratio: Optional[float] = Field(default=None, gt=1.0)
+
+
 class GLOBAL_SETTINGS_(BaseModel):
     """Settings for global"""
 
@@ -248,6 +261,7 @@ class USER_CONFIG(BaseModel):
     STAGE_02: STAGE_02_
     STAGE_03: STAGE_03_
     STAGE_04: STAGE_04_
+    VELEST_SETTINGS: VELEST_SETTINGS_ = Field(default_factory=VELEST_SETTINGS_)
     REPORT_SETTINGS: REPORT_SETTINGS_
     FIGURE_SETTINGS: FIGURE_SETTINGS_
     GLOBAL_SETTINGS: GLOBAL_SETTINGS_
@@ -719,8 +733,13 @@ class STATIONS(BaseModel):
 class COORDINATE_SYSTEM_(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    origin_latitude: float = Field(ge=-90.0, le=90.0)  # olat
-    origin_longitude: float = Field(ge=-180.0, le=180.0)  # olon
+    # Empty: filled from the user config (see cmn.read_velest_config)
+    origin_latitude: Optional[float] = Field(
+        default=None, ge=-90.0, le=90.0
+    )  # olat
+    origin_longitude: Optional[float] = Field(
+        default=None, ge=-180.0, le=180.0
+    )  # olon
     system: int = Field(ge=0, le=2)  # icoordsystem
     elevation_shift: float = Field(ge=0.0)  # zshift
     trial_mode: int = Field(ge=0)  # itrial

@@ -16,12 +16,14 @@ TITLE: "VELEST Inversion Configuration Parameters"
 
 COORDINATE_SYSTEM:
 
-  # * Latitude of local Cartesian origin (decimal degrees)
-  origin_latitude: 39.65
+  # Origin of the local Cartesian frame (decimal degrees). Empty: the centre
+  # of the EVENT_SELECTION box of the user config (39.65N 20.60E for the
+  # Ioannina configs). VELEST_SETTINGS.origin_lat / origin_lon in the user
+  # config override it.
+  origin_latitude:
 
-  # * Longitude of local Cartesian origin (decimal degrees)
-  #   VELEST convention: West is POSITIVE, East is NEGATIVE (20.60E -> -20.60)
-  origin_longitude: -20.60
+  # VELEST convention: West is POSITIVE, East is NEGATIVE (20.60E -> -20.60)
+  origin_longitude:
 
   # * Coordinate system
   # 0 = local Cartesian (short-distance conversion)
@@ -111,7 +113,7 @@ VELOCITY:
   # * S-wave weighting factor
   s_weight_factor: 1.0
 
-  # * VP / VS ratio
+  # * VP / VS ratio (VELEST_SETTINGS.vp_vs_ratio in the user config overrides it)
   vp_vs_ratio: 1.82
 
   # * Number of velocity models

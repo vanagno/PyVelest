@@ -15,7 +15,7 @@ from obspy.core.event import (
 )
 
 from obspy import read_events
-from pandas import DataFrame, read_csv, to_numeric
+from pandas import DataFrame, Series, read_csv, to_numeric
 from src.io.select3D import select_events_3d
 from datetime import timezone
 from obspy.geodetics.base import gps2dist_azimuth as gps
@@ -116,6 +116,24 @@ def phase_quality(phases, hq_p_max_class=1):
 def station_coordinates(config):
     """{code: (lat, lon)} of the stations inside STUDY_AREA."""
     stations_df = read_station(config, config.INPUTS.stations)
+    all_codes = set(read_csv(config.INPUTS.stations)["code"].astype(str))
+    outside = sorted(all_codes - set(stations_df["code"].astype(str)))
+    print(
+        f"+++ {len(stations_df)} of {len(all_codes)} stations of "
+        f"{config.INPUTS.stations} lie inside STUDY_AREA"
+    )
+    if outside:
+        print(
+            "!!! Picks at stations outside STUDY_AREA are ignored: "
+            + ", ".join(outside)
+        )
+    too_long = sorted(c for c in stations_df["code"].astype(str) if len(c) > 4)
+    if too_long:
+        raise ValueError(
+            f"VELEST station codes have at most 4 characters: {too_long}. "
+            f"Rename them in {config.INPUTS.stations} and in the catalog "
+            "(tools/prepare_real_inputs.py --rename OLD=NEW)"
+        )
     return {
         str(row.code): (row.lat, row.lon)
         for row in stations_df.itertuples(index=False)
@@ -197,8 +215,8 @@ def summarize_catalog(config):
     cat_outfile = CATALOG_SUMMARY
 
     # processing
-    cat = read_events(cat_inpfile)
     station_info = station_coordinates(config)
+    cat = read_events(cat_inpfile)
     data = []
     for eid, event in enumerate(cat, 1):
         po = event.preferred_origin() or event.origins[0]
@@ -293,15 +311,26 @@ def select(
     def bound(value, fallback):
         return fallback if value is None else value
 
-    mask = df["lat"].between(
-        bound(es.min_lat, sa.min_lat), bound(es.max_lat, sa.max_lat)
-    ) & df["lon"].between(
-        bound(es.min_lon, sa.min_lon), bound(es.max_lon, sa.max_lon)
-    )
+    # (criterion, events passing it); an event must pass all of them
+    checks = [
+        (
+            "event box",
+            df["lat"].between(
+                bound(es.min_lat, sa.min_lat), bound(es.max_lat, sa.max_lat)
+            )
+            & df["lon"].between(
+                bound(es.min_lon, sa.min_lon), bound(es.max_lon, sa.max_lon)
+            ),
+        )
+    ]
     if es.min_depth_km is not None:
-        mask &= df["dep"] >= es.min_depth_km
+        checks.append(
+            (f"dep >= {es.min_depth_km}", df["dep"] >= es.min_depth_km)
+        )
     if es.max_depth_km is not None:
-        mask &= df["dep"] <= es.max_depth_km
+        checks.append(
+            (f"dep <= {es.max_depth_km}", df["dep"] <= es.max_depth_km)
+        )
 
     limits = (
         ("erh", config.EVENT_SELECTION.max_horizontal_error_km, "le"),
@@ -317,7 +346,10 @@ def select(
         comparison = (
             df[column] <= limit if operator == "le" else df[column] >= limit
         )
-        mask &= comparison | df[column].isna()
+        sign = "<=" if operator == "le" else ">="
+        checks.append(
+            (f"{column} {sign} {limit}", comparison | df[column].isna())
+        )
 
     # High-quality P arrivals; a missing value fails these limits.
     hq_limits = (
@@ -332,15 +364,32 @@ def select(
                 f"{catalog_sum_file} has no '{column}' column; rebuild it "
                 "with this version of PyVelest"
             )
-        mask &= (
-            df[column] <= limit if operator == "le" else df[column] >= limit
-        ).fillna(False)
+        sign = "<=" if operator == "le" else ">="
+        checks.append(
+            (
+                f"{column} {sign} {limit}",
+                (
+                    df[column] <= limit
+                    if operator == "le"
+                    else df[column] >= limit
+                ).fillna(False),
+            )
+        )
+
+    mask = Series(True, index=df.index)
+    for _, passed in checks:
+        mask &= passed
 
     filtered = df[mask].copy()
     if filtered.empty:
+        counts = "; ".join(
+            f"{label}: {int(passed.sum())}" for label, passed in checks
+        )
         raise ValueError(
             f"No event out of {len(df)} passes the EVENT_SELECTION "
-            f"criteria ({catalog_sum_file}); relax the thresholds."
+            f"criteria ({catalog_sum_file}); relax the thresholds. Events "
+            f"passing each criterion on its own: {counts}. Station counts "
+            "and gaps only use stations inside STUDY_AREA."
         )
     selected = select_events_3d(filtered, config)
     print(

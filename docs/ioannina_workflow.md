@@ -365,3 +365,36 @@ marked † were already in the original code and would affect other datasets too
 3. **Magnitudes:** I used the magnitudes in `ioannina_final.txt` rather than REAL's. Is that right?
 4. **Unused stations:** do KBN, LSK and SRN have data? Adding picks from them would help depth
    resolution: KBN and LSK are north of the sequence, SRN to its north-west.
+
+---
+
+## 9. Running another dataset (example: `configs/user_evia.yaml`)
+
+Settings to check when a config is copied from the Ioannina ones:
+
+* **`STUDY_AREA` must hold the whole network.** Only picks at stations inside it are read. If it is set
+  to the target box, most stations drop out, every event fails the station-count and gap limits, and
+  stage 1 stops with "No event ... passes the EVENT_SELECTION criteria". The start-up lines say how
+  many stations are inside, and that error lists how many events pass each limit.
+* **VELEST origin and Vp/Vs.** Set them per dataset in `VELEST_SETTINGS` (`origin_lat`, `origin_lon`
+  East positive, `vp_vs_ratio`). An empty origin is the centre of the `EVENT_SELECTION` box, which
+  gives 39.65°N 20.60°E for the Ioannina configs. The stage files keep the Ioannina Vp/Vs (1.82). The
+  median of the per-event Wadati slopes (§2) is 1.83 for Ioannina and 1.71 for Evia.
+* **Shallow relocations in stage 3.** On Evia, stage-2 relocations shallower than 1 km made VELEST
+  reject every step of the first stage-3 iteration in 5 of 8 test inversions; `RESELECTION.min_depth_km:
+  1.0` fixed all 8. Inversions that stop before their first velocity update are now reported
+  (`!!! VELEST failed ...`) and left out of the model and station-delay averages instead of crashing
+  the run.
+* **Station codes of at most 4 characters.** VELEST cannot read longer ones (Evia: `SAGMA`). Rename
+  them in both the station table and the catalog, e.g. with `--rename SAGMA=SAGM` below. PyVelest
+  stops at start-up if one is left.
+* **REAL hypocentres instead of hypoSA:** leave out `--sa-catalog` / `--sa-phases`. `--real-catalog`
+  puts REAL's residual in the RMS field; without it the RMS is 0 and `max_rms_sec` keeps every event.
+  REAL also puts about half of the events at exactly 0 km (4,999 of 10,362 for Ioannina), so keep
+  `unconstrained_depth_below_km` / `start_depth_km`.
+
+  ```sh
+  python tools/prepare_real_inputs.py --stations station.dat --phases phase_allday.txt \
+      --real-catalog catalog_allday.txt --rename SAGMA=SAGM \
+      --out-stations inputs/Evia/stations.csv --out-catalog inputs/Evia/catalog.pha
+  ```
