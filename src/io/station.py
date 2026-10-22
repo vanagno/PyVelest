@@ -586,16 +586,31 @@ def prepare_station(config, stage_n, run_n=None):
 
     if stage_n == 1:
 
+        root_dir = Path("outputs/stage_01")
+        run_dir = root_dir / f"run_{run_n:02d}"
+
+        # VELEST recipe, step 2: repeat with the new station delays. Later
+        # runs start from the previous run's averaged delays.
+        if run_n > 1 and config.STAGE_01.update_station_delays:
+            copy(
+                root_dir / f"run_{run_n - 1:02d}" / "summary" / "stations.sta",
+                run_dir,
+            )
+            return
+        if run_n > 1:
+            copy(root_dir / "stations.sta", run_dir)
+            return
+
         # inputs
         station_input = Path(config.INPUTS.stations)
 
         # outputs
-        root_dir = Path("outputs/stage_01")
         station_csv_outfile = root_dir / "stations_sel.csv"
 
         # Read / Implement / Write
         station_out = root_dir / "stations.sta"
         wrire_station(config, station_input, station_out, station_csv_outfile)
+        copy(station_out, run_dir)
 
     elif stage_n == 2:
 

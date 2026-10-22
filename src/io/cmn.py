@@ -324,8 +324,9 @@ def prepare_cmn(config, stage_n, run_n=None):
             VelestConfig = read_velest_config(config, 1)
             VelestConfig.DATASET.number_of_earthquakes = len(events_df)
             VelestConfig.INPUT_FILE.velocity_model = model_dir / "model.mod"
-            VelestConfig.INPUT_FILE.stations = root / "stations.sta"
-            VelestConfig.INPUT_FILE.earthquakes = root / "select.cnv"
+            # each run's start: its own station delays and hypocentres
+            VelestConfig.INPUT_FILE.stations = run_dir / "stations.sta"
+            VelestConfig.INPUT_FILE.earthquakes = run_dir / "select.cnv"
             VelestConfig.OUTPUT_FILE.main_output = model_dir / "velout.inv"
             VelestConfig.OUTPUT_FILE.cnv_output = model_dir / "velout.cnv"
             VelestConfig.OUTPUT_FILE.station_output = model_dir / "velout.sta"

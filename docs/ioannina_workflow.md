@@ -9,16 +9,17 @@ This branch adapts PyVelest to your data and runs it. It contains:
 * **Results:** a minimum 1-D model, station delays and relocations for the target area 39.5–39.8°N /
   20.4–20.8°E, from **four starting models**, in `results/ioannina/`.
 
-Every number below comes from the full runs in `results/ioannina/*/summary.json`.
+Every number below comes from the full runs in `results/ioannina/*/summary.json`. Those runs predate the
+recipe's stage 1 (§4): they used damping 1.0 / 0.1 with 8 iterations, and every stage-1 run restarted
+from the catalogue hypocentres with zero station delays. Rerun them to update the numbers.
 
 ---
 
 ## 1. Quick start
 
 ```sh
-# VELEST: the bundled src/exc/velest is an Intel build (needs libimf.so). If it does not run:
+# VELEST: build the double-precision executable PyVelest uses by default (GLOBAL_SETTINGS.velest_exec)
 sh src/exc/build_velest.sh                      # -> src/exc/velest_gfortran
-#   then set GLOBAL_SETTINGS.velest_exec: src/exc/velest_gfortran in the config
 
 # Inputs (already committed; rebuild only if the REAL/hypoSA files change)
 python tools/prepare_real_inputs.py \
@@ -42,8 +43,9 @@ python pyvelest.py --config configs/user_ionio.yaml   # ionio start
 python pyvelest.py --stages 5                         # redo single stages; earlier outputs are kept
 ```
 
-A full run is 5 × 50 + 5 × 25 = 375 VELEST inversions of 500 events. One inversion takes about 9 s, so a
-run takes about 60 min with `n_jobs: 1` and about 20 min with `n_jobs: 4`. `--stages 2..5` needs the
+A full run is 5 × 50 + 5 × 25 = 375 VELEST inversions of 500 events. An inversion of 8 iterations takes
+about 9 s. Stage 1 now allows up to 24 iterations (§4), so a full run takes up to about 2.5 h with
+`n_jobs: 1` and about 40 min with `n_jobs: 4`. `--stages 2..5` needs the
 earlier stages of the same run in `outputs/` (the `outputs/` committed in the repository is the original
 example run). The final products land in
 `outputs/stage_fn/`:
@@ -123,9 +125,9 @@ Common choices:
 
 | Stage | What runs | Key settings |
 |---|---|---|
-| 1 | 5 runs × 50 simultaneous inversions from perturbed starting models; each run's average model is merged and seeds the next run | Events: box, depth > 0.1 km, ≥ 8 stations with usable picks, gap ≤ 180° (usable stations), hypoSA RMS ≤ 0.5 s → 739 candidates → 500 spread over a 6×6×6 grid. Damping: 1.0 (velocity), 0.1 (station delays). Reference station: JAN (highest score) |
+| 1 | 5 runs × 50 simultaneous inversions from perturbed starting models (VELEST recipe, step 2). Each run starts from the previous run's merged average model, averaged station delays and median relocated hypocentres | Events: box, depth > 0.1 km, ≥ 8 stations with usable picks, gap ≤ 180° (usable stations), hypoSA RMS ≤ 0.5 s → 739 candidates → 500 spread over a 6×6×6 grid. Damping as in the recipe: 0.01 (hypocentres), 0.01 (station delays), 0.1 (velocity); up to 24 iterations. Reference station: JAN (highest score) |
 | 2 | Single-event relocation of all 10,362 events with the stage-1 model and delays, then reselection | `RESELECTION`: erh ≤ 4 km, 0.5 ≤ erz ≤ 4.5 km, RMS ≤ 0.3 s → 1,375–1,555 candidates → 500 |
-| 3 | 5 runs × 25 inversions on the reselected events | as stage 1 |
+| 3 | 5 runs × 25 inversions on the reselected events (recipe step 4); each run's model seeds the next, hypocentres and station delays come from stage 2 | Damping 0.01 (hypocentres), 0.1 (station delays), 1.0 (velocity); 8 iterations |
 | 4 | Stability test: unperturbed reference inversion (`run_00`), then 5 inversions with hypocentres shifted N(0, 5 km) in x, y and z | Final positions are compared with `run_00` |
 | 5 | Final single-event relocation of all events with the final model and delays → `outputs/stage_fn` | Station delays are used (`use_station_corrections: true`) |
 
@@ -290,6 +292,12 @@ the realistic depth uncertainty for this network.
 
 ## 6. Caveats
 
+* **Model–delay trade-off under the recipe's damping.** A compact cluster seen by a fixed set of stations
+  lets the path-averaged velocity trade off with the station delays, and the weak stage-1 damping
+  constrains that less. In an Evia test (kiratzi87 start) the far-station delays reached −1.5 s after
+  stage 1 and −2.5 s after stage 3, against −0.6 / −1.0 s with the old settings, with a slower middle
+  crust. The final relocations fitted better (median RMS 0.19 against 0.20 s) and were more stable in
+  stage 4. Check that the delays make geological sense (recipe, step 2c) before using the model.
 * **Depth resolution is limited.** The nearest station is ~21 km from the sequence. Take ±2 km from the
   stability test as the depth uncertainty, and expect trade-offs between depth, origin time and the
   shallow velocities.
@@ -328,8 +336,16 @@ marked † were already in the original code and would affect other datasets too
   contributes its own final state.
 * † **Layer merging:** merges used chained 50/50 means; they now use the thickness-weighted slowness,
   which preserves travel time.
-* † **Stage-1 damping:** 0.1 / 0.01 made up to 86 % of inversions stop with "error in (damped) matrix G",
-  and the average came from the survivors. It is now 1.0 / 0.1, and every inversion converges.
+* † **Stage-1 damping:** the recipe's 0.1 / 0.01 made up to 86 % of inversions stop with "error in
+  (damped) matrix G", and the average came from the survivors. That error is a single-precision limit of
+  VELEST's Cholesky test: `src/exc/build_velest.sh` now builds VELEST in double precision, which gives
+  practically the same results where single precision works (models within 0.01 km/s in tests), and
+  stage 1 uses the recipe's damping with up to 24 iterations. The results in §5 still come from the earlier 1.0 / 0.1 workaround.
+* **Stage-1 runs follow the recipe:** each run starts from the previous run's averaged station delays and
+  median relocated hypocentres, not only from its model (`STAGE_01.update_station_delays` /
+  `update_hypocenters`; both on by default). In an Evia test only both together settled between runs:
+  restarting from zero delays and the catalogue made the delays swing between runs, and updating only
+  one of the two kept them drifting.
 * † **Silent failures:** a failed VELEST run could pass silently and leave results from an earlier run in
   the average. Old outputs are now removed before each run, failures are reported, and only this run's
   models are read.
@@ -353,7 +369,7 @@ marked † were already in the original code and would affect other datasets too
 * VELEST runs inside each model directory, with relative paths (it reads at most 80 characters per path),
   so runs can go in parallel.
 * `pyvelest.py --config/--stages`.
-* `src/exc/build_velest.sh` builds VELEST with gfortran.
+* `src/exc/build_velest.sh` builds a double-precision VELEST with gfortran; it is the default executable.
 
 ---
 

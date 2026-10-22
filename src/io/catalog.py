@@ -25,7 +25,7 @@ from shutil import copy
 
 from datetime import datetime as dt, timedelta
 from math import sqrt, cos, radians
-from numpy import nan, random
+from numpy import median, nan, random
 from src.io.station import read_station
 
 import warnings
@@ -831,6 +831,118 @@ def cnv2csv(cnv_inpfile, csv_outfile):
     )
 
 
+def read_cnv(cnv_inpfile):
+    """Events of a CNV file: origin time, epicentre, depth, magnitude and
+    observations (station, phase, weight class, travel time).
+
+    Reads both the input format (catalog_to_cnv) and VELEST's output, whose
+    depth field starts one column earlier.
+    """
+    events = []
+    with open(cnv_inpfile) as fo:
+        for line in fo:
+            line = line.rstrip("\n")
+            if line.startswith("9999"):
+                break
+            if len(line) > 35 and line[25] in "SN" and line[35] in "EW":
+                date = line[:6].replace(" ", "0")
+                hhmm = line[7:11].replace(" ", "0")
+                ort = dt(
+                    _two_digit_year(int(date[:2])),
+                    int(date[2:4]),
+                    int(date[4:6]),
+                ) + timedelta(
+                    hours=int(hhmm[:2]),
+                    minutes=int(hhmm[2:]),
+                    seconds=float(line[12:17]),
+                )
+                events.append(
+                    {
+                        "ort": ort,
+                        "lat": float(line[18:25])
+                        * (-1 if line[25] == "S" else 1),
+                        "lon": float(line[27:35])
+                        * (-1 if line[35] == "W" else 1),
+                        "dep": float(line[36:44]),
+                        # input format only (VELEST's output puts it at 43-49)
+                        "mag": float(line[46:51].strip() or 0.0),
+                        "obs": [],
+                    }
+                )
+            elif line.strip() and events:
+                for i in range(0, len(line), 12):
+                    obs = line[i : i + 12]
+                    if obs.strip():
+                        events[-1]["obs"].append(
+                            (obs[:4], obs[4], int(obs[5]), float(obs[6:12]))
+                        )
+    return events
+
+
+def update_hypocenters(cnv_inpfile, relocated_cnv_files, cnv_outfile):
+    """Start a stage-1 run from the relocations of the previous one.
+
+    Each event gets the median origin time, epicentre and depth of its
+    relocations in ``relocated_cnv_files`` (VELEST's velout.cnv of the
+    inversions that entered the previous run's average). Its picks stay
+    those of ``cnv_inpfile``, with the travel times re-referenced to the new
+    origin time, so the absolute pick times do not change.
+    """
+    events = read_cnv(cnv_inpfile)
+    relocations = [read_cnv(f) for f in relocated_cnv_files]
+    if not relocations:
+        raise ValueError(f"No relocations to update {cnv_inpfile} with")
+    for cnv, relocated in zip(relocated_cnv_files, relocations):
+        if len(relocated) != len(events):
+            raise ValueError(
+                f"{cnv} has {len(relocated)} events, {cnv_inpfile} "
+                f"{len(events)}"
+            )
+
+    with open(cnv_outfile, "w") as f:
+        for i, event in enumerate(events):
+            shift = median(
+                [
+                    (r[i]["ort"] - event["ort"]).total_seconds()
+                    for r in relocations
+                ]
+            )
+            # VELEST keeps the events in input order; a large shift means
+            # the files do not hold the same events.
+            if abs(shift) > 30.0:
+                raise ValueError(
+                    f"Event {i + 1} of {cnv_inpfile}: relocated origin times "
+                    f"differ by {shift:.1f} s"
+                )
+            ort = event["ort"] + timedelta(seconds=shift)
+            # CNV times have two decimals
+            ort = ort.replace(microsecond=0) + timedelta(
+                seconds=round(ort.microsecond / 1e6, 2)
+            )
+            shift = (ort - event["ort"]).total_seconds()
+            lat = median([r[i]["lat"] for r in relocations])
+            lon = median([r[i]["lon"] for r in relocations])
+            dep = median([r[i]["dep"] for r in relocations])
+            f.write(
+                f"{ort:%y%m%d} "
+                f"{ort:%H%M} "
+                f"{ort.second + ort.microsecond / 1e6:05.2f} "
+                f"{abs(lat):7.4f}{'S' if lat < 0 else 'N'} "
+                f"{abs(lon):8.4f}{'W' if lon < 0 else 'E'} "
+                f"{dep:7.2f}  "
+                f"{event['mag']:5.2f}\n"
+            )
+            observations = [
+                f"{sta}{pha}{wet:d}{tt - shift:6.2f}"
+                for sta, pha, wet, tt in event["obs"]
+            ]
+            # six observations per line
+            for k in range(0, len(observations), 6):
+                f.write("".join(observations[k : k + 6]) + "\n")
+            f.write("\n")
+        f.write("9999\n")
+
+
 def reselect_best(config, stage_n):
 
     rootpath = Path(f"outputs/stage_{stage_n:02d}")
@@ -929,6 +1041,30 @@ def prepare_catalog(config, cat_inp=None, stage_n=1, run_n=None):
     if stage_n == 1:
 
         root = Path("outputs/stage_01")
+        run_dir = root / f"run_{run_n:02d}"
+
+        # VELEST recipe, step 2: repeat with the new hypocentres. Later runs
+        # start from the relocations of the inversions that entered the
+        # previous run's average.
+        if run_n > 1 and config.STAGE_01.update_hypocenters:
+            prev_dir = root / f"run_{run_n - 1:02d}"
+            model_dirs = [
+                prev_dir / f"model_{n:02d}"
+                for n in range(1, config.SYNTHETIC_MODELS.n_models + 1)
+            ]
+            relocated = [
+                d / "velout.cnv"
+                for d in model_dirs
+                if (d / "velocity_summary.csv").exists()
+                and (d / "velout.cnv").exists()
+            ]
+            update_hypocenters(
+                prev_dir / "select.cnv", relocated, run_dir / "select.cnv"
+            )
+            return
+        if run_n > 1:
+            copy(root / "select.cnv", run_dir)
+            return
 
         # inputs
         catalog_csv_inpfile = CATALOG_SUMMARY
@@ -958,6 +1094,7 @@ def prepare_catalog(config, cat_inp=None, stage_n=1, run_n=None):
             ),
             start_depth_km=config.INPUTS.start_depth_km,
         )
+        copy(select_cnv_outfile, run_dir)
 
     elif stage_n == 2:
         # output

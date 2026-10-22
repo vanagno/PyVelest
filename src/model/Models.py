@@ -178,6 +178,11 @@ class STAGE_01_(BaseModel):
     """Settings for stage_01"""
 
     n_runs: int = Field(default=5, ge=0)
+    # VELEST recipe, step 2: later runs start from the previous run's
+    # averaged station delays / median relocated hypocentres (false: every
+    # run starts from zero delays / the input catalogue).
+    update_station_delays: bool = True
+    update_hypocenters: bool = True
 
 
 class STAGE_02_(BaseModel):
@@ -243,8 +248,10 @@ class GLOBAL_SETTINGS_(BaseModel):
     clean_workspace: bool = Field(default=True)
     # Number of VELEST runs executed in parallel (stages 1 and 3).
     n_jobs: int = Field(default=1, ge=1)
-    # VELEST executable (see src/exc/build_velest.sh to compile one)
-    velest_exec: str = Field(default="src/exc/velest")
+    # VELEST executable: the double-precision build of
+    # src/exc/build_velest.sh (the bundled single-precision src/exc/velest
+    # fails on the recipe's weak stage-1 damping)
+    velest_exec: str = Field(default="src/exc/velest_gfortran")
 
 
 class USER_CONFIG(BaseModel):

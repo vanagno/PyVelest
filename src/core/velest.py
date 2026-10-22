@@ -123,6 +123,12 @@ def _run_many(config, workdirs):
     failed = [(d, e) for d, e in zip(workdirs, errors) if e]
     for workdir, error in failed:
         print(f"!!! VELEST failed in {workdir}: {error}")
+    if any("matrix G" in error for _, error in failed):
+        print(
+            "!!! 'error in (damped) matrix G' is a single-precision limit of "
+            "VELEST: build the double-precision executable with "
+            "src/exc/build_velest.sh and use it (GLOBAL_SETTINGS.velest_exec)"
+        )
     if len(failed) == len(workdirs):
         raise RuntimeError("All VELEST runs failed; see messages above.")
     return failed

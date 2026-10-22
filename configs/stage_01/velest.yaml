@@ -135,14 +135,15 @@ DAMPING:
   hypocenter_depth: 0.01
 
   # * Velocity damping
-  #   1.0 / 0.1 are VELEST's usual values. With 0.1 / 0.01 the near-surface
-  #   layer and the station delays trade off so strongly that many inversions
-  #   stopped with "error in (damped) matrix G" (up to 43 of 50 per run), and
-  #   the averaged model came from the few that survived.
-  velocity: 1.0
+  #   VELEST recipe (Kissling), step 2: 0.01 for hypocentres and station
+  #   delays, 0.1 for velocities (stage 3 uses step 4's 0.01 / 0.1 / 1.0).
+  #   Needs the double-precision VELEST of src/exc/build_velest.sh: in single
+  #   precision the trade-off between the near-surface layer and the station
+  #   delays makes many inversions stop with "error in (damped) matrix G".
+  velocity: 0.1
 
   # * Station correction damping
-  station_correction: 0.1
+  station_correction: 0.01
 
 ###############################################################################
 # Station corrections (line 8)
@@ -220,7 +221,11 @@ ITERATION:
   minimum_rms_change: 0.001
 
   # * Maximum number of iterations
-  maximum_iterations: 8
+  #   With the weak velocity damping VELEST scales most velocity steps down
+  #   to keep them under velocity_adjustment, so it needs more iterations
+  #   than with 1.0: in tests the RMS still fell after 16 and stopped falling
+  #   by 24 (VELEST stops earlier by itself when it has converged).
+  maximum_iterations: 24
 
   # * How often velocity/station corrections are inverted
   invert_ratio_every: 2
