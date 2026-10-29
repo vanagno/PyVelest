@@ -167,15 +167,21 @@ def check_sa_phases(sa_events, sa_phase_file):
             raise ValueError(f"hypoSA files disagree at event #{i + 1}")
 
 
-def rename_stations(stations, real_events, renames):
-    """Apply OLD=NEW station renames to the stations and the picks; VELEST
-    reads station codes of at most 4 characters."""
+def parse_renames(renames):
+    """{OLD: NEW} from the OLD=NEW items of --rename."""
     rename = {}
     for item in renames:
         old, sep, new = item.partition("=")
         if not sep or not old or not new:
             raise ValueError(f"--rename {item}: expected OLD=NEW")
         rename[old] = new
+    return rename
+
+
+def rename_stations(stations, real_events, renames):
+    """Apply OLD=NEW station renames to the stations and the picks; VELEST
+    reads station codes of at most 4 characters."""
+    rename = parse_renames(renames)
     codes = [rename.get(s["code"], s["code"]) for s in stations]
     duplicates = sorted({c for c in codes if codes.count(c) > 1})
     if duplicates:

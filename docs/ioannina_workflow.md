@@ -404,6 +404,18 @@ Settings to check when a config is copied from the Ioannina ones:
 * **Station codes of at most 4 characters.** VELEST cannot read longer ones (Evia: `SAGMA`). Rename
   them in both the station table and the catalog, e.g. with `--rename SAGMA=SAGM` below. PyVelest
   stops at start-up if one is left.
+* **A catalogue located with another program** (for example LOC-FLOW's HypoInverse step, written as a
+  HypoDD phase file): PyVelest reads HypoDD phase files directly, but their pick weights are usually all
+  1.0, which makes every pick a best-class pick. `tools/add_pick_probabilities.py` puts back the PhaseNet
+  probabilities from REAL's phase file, matching picks by station, phase and absolute time:
+
+  ```sh
+  python tools/add_pick_probabilities.py --located hypoDDevia.pha --phases phase_allday.txt \
+      --rename SAGMA=SAGM --out inputs/Evia/catalog_located.pha
+  ```
+
+  The header's errors and RMS are kept, so the error and RMS limits of `EVENT_SELECTION` apply
+  (PyVelest's horizontal error is √2 × eh for this format).
 * **REAL hypocentres instead of hypoSA:** leave out `--sa-catalog` / `--sa-phases`. `--real-catalog`
   puts REAL's residual in the RMS field; without it the RMS is 0 and `max_rms_sec` keeps every event.
   REAL also puts about half of the events at exactly 0 km (4,999 of 10,362 for Ioannina), so keep
