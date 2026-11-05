@@ -1,4 +1,5 @@
 from pathlib import Path
+from src.io.cmn import read_velest_config
 from src.model.Models import LAYER, VMODEL
 from pandas import read_csv, DataFrame, concat
 from numpy import array_equal, allclose, arange, inf
@@ -517,11 +518,49 @@ def simplified2vmodel(config, simplified_modelfile, final_modelfile):
     write_vmodel(vmodel, final_modelfile)
 
 
+# INPUTS.vmodel as stage 1 uses it (write_start_model)
+START_MODEL = Path("outputs/stage_01") / "start_model.mod"
+
+
+def write_start_model(config):
+    """Write INPUTS.vmodel to START_MODEL in the form the phase mode needs.
+
+    Phase mode 2 inverts an S model of its own: a model without one gets
+    Vs = Vp / vp_vs_ratio in every layer (same depths and damping), and an S
+    part in INPUTS.vmodel is used as it is. Phase modes 1 and 3 read only the
+    P model, so an S part is left out.
+    """
+    velocity = read_velest_config(config, 1).VELOCITY
+    vmodel = read_vmodel(config.INPUTS.vmodel)
+    if velocity.phase_mode == 2 and not vmodel.layers_vs:
+        vmodel.layers_vs = [
+            LAYER(
+                vel=round(layer.vel / velocity.vp_vs_ratio, 2),
+                depth=layer.depth,
+                vdamp=layer.vdamp,
+            )
+            for layer in vmodel.layers_vp
+        ]
+        print(f"+++ Starting S model: Vs = Vp / {velocity.vp_vs_ratio:.3f}")
+    elif velocity.phase_mode == 2:
+        print(
+            f"+++ Starting S model: the S part of {config.INPUTS.vmodel} "
+            "(vp_vs_ratio not used)"
+        )
+    elif vmodel.layers_vs:
+        vmodel.layers_vs = None
+        print(
+            f"!!! The S part of {config.INPUTS.vmodel} is not used: phase "
+            f"mode {velocity.phase_mode} reads only the P model"
+        )
+    write_vmodel(vmodel, START_MODEL)
+
+
 def ensemble_reference_model(config, stage_n, run_n) -> Path:
     """Model the random ensemble of a stage-1/3 run is generated around."""
     if stage_n == 1:
         if run_n == 1:
-            return Path(config.INPUTS.vmodel)
+            return START_MODEL
         return Path("outputs/stage_01") / f"run_{run_n-1:02d}" / "summary" / "model.mod"
     if run_n == 1:
         return Path("outputs/stage_02") / "model.mod"
@@ -536,6 +575,8 @@ def prepare_model(config, stage_n, run_n=None):
         run_dir = rootout / f"run_{run_n:02d}"
 
         # Read / Implement / Write
+        if run_n == 1:
+            write_start_model(config)
         vmodel_input = ensemble_reference_model(config, 1, run_n)
         n_models = config.SYNTHETIC_MODELS.n_models
         velocity_std = config.SYNTHETIC_MODELS.velocity_std

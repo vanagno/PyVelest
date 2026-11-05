@@ -120,8 +120,14 @@ VELEST_SETTINGS:
   # Wadati (ts against tp per event, events in the target box with >= 5 P-S
   # pairs, P probability >= 0.70, S >= 0.55): median 1.71 over 2,178
   # events (1.68-1.73 for other probability limits). The stage files hold
-  # the Ioannina value, 1.82.
+  # the Ioannina value, 1.82. With phase_mode 2 it only sets the starting Vs
+  # (when INPUTS.vmodel has no S part).
   vp_vs_ratio: 1.71
+  # 1 = P only; 2 = separate P and S models, with S station delays of their
+  # own; 3 = Vs = Vp / vp_vs_ratio and S delay = P delay * vp_vs_ratio.
+  # Empty: the stage files' value (3). With 2, an S part in INPUTS.vmodel is
+  # the starting S model; without one, Vs = Vp / vp_vs_ratio.
+  phase_mode:
 
 REPORT_SETTINGS:
   report_on: false

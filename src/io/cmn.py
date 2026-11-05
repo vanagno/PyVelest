@@ -62,6 +62,8 @@ def read_velest_config(config, stage_n: int) -> VELEST_CONFIG:
         c.origin_longitude = -centre(
             es.min_lon, es.max_lon, sa.min_lon, sa.max_lon
         )
+    if vs.phase_mode is not None:
+        velest.VELOCITY.phase_mode = vs.phase_mode
     if vs.vp_vs_ratio is not None:
         velest.VELOCITY.vp_vs_ratio = vs.vp_vs_ratio
     return velest
@@ -313,10 +315,15 @@ def prepare_cmn(config, stage_n, run_n=None):
         if run_n == 1:
             v = read_velest_config(config, 1)
             c = v.COORDINATE_SYSTEM
+            phases = {
+                1: "phase mode 1 (P only)",
+                2: "phase mode 2 (P and S models inverted separately)",
+                3: f"phase mode 3 (Vp/Vs {v.VELOCITY.vp_vs_ratio:.3f})",
+            }
             print(
                 f"+++ VELEST origin: lat {c.origin_latitude:.4f}, lon "
                 f"{-c.origin_longitude:.4f} (East positive); "
-                f"Vp/Vs {v.VELOCITY.vp_vs_ratio:.3f}"
+                f"{phases[v.VELOCITY.phase_mode]}"
             )
         for n_model in range(1, config.SYNTHETIC_MODELS.n_models + 1):
             model_dir = run_dir / f"model_{n_model:02d}"

@@ -401,6 +401,16 @@ Settings to check when a config is copied from the Ioannina ones:
   1.0` fixed all 8. Inversions that stop before their first velocity update are now reported
   (`!!! VELEST failed ...`) and left out of the model and station-delay averages instead of crashing
   the run.
+* **Phase mode.** `VELEST_SETTINGS.phase_mode` overrides the stage files. Phase mode 3 (their default)
+  fixes Vs = Vp / `vp_vs_ratio` and ties each station's S delay to its P delay × `vp_vs_ratio`; phase
+  mode 2 inverts a Vs model and S station delays of its own. On Evia, S arrives 0.25–1.15 s later than
+  phase mode 3 predicts, depending on the station, which no fixed ratio absorbs. In a test, phase mode 2
+  brought the P delays to −0.1 / +0.6 s (down to −3 s with phase mode 3), fitted best (relocation RMS
+  0.110 against 0.120 s) and gives a Vs model for NLL. With phase mode 2 an S part in `INPUTS.vmodel` is
+  the starting S model; without one, PyVelest starts from Vs = Vp / `vp_vs_ratio`. Starts of 1.72 and
+  1.77 both gave Vp/Vs 1.77–1.88 down to about 13 km; deeper, each stayed near its start. The starting
+  model used is saved as `outputs/stage_01/start_model.mod`, and the model figures get a Vs version
+  (`*_vs.png`).
 * **Station codes of at most 4 characters.** VELEST cannot read longer ones (Evia: `SAGMA`). Rename
   them in both the station table and the catalog, e.g. with `--rename SAGMA=SAGM` below. PyVelest
   stops at start-up if one is left.

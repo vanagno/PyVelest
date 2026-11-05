@@ -239,6 +239,11 @@ class VELEST_SETTINGS_(BaseModel):
     # unless the stage files give one.
     origin_lat: Optional[float] = Field(default=None, ge=-90.0, le=90.0)
     origin_lon: Optional[float] = Field(default=None, ge=-180.0, le=180.0)
+    # 1 = P only; 2 = independent P and S models, with S station delays of
+    # their own; 3 = Vs = Vp / vp_vs_ratio, S delay = P delay * vp_vs_ratio.
+    phase_mode: Optional[int] = Field(default=None, ge=1, le=3)
+    # Phase mode 3: the fixed ratio. Phase mode 2: Vs of the starting model
+    # when INPUTS.vmodel has no S part (an S part in it is used as it is).
     vp_vs_ratio: Optional[float] = Field(default=None, gt=1.0)
 
 

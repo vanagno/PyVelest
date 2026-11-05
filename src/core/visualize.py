@@ -185,20 +185,31 @@ def plot_events(config):
 
 
 def plot_models(config, stage_n, run_n):
+    """Vp ensemble of a stage-1/3 run, and the Vs ensemble when the model
+    has an S part (phase mode 2)."""
+    _plot_models(config, stage_n, run_n, model_n=1)
+    if read_vmodel(ensemble_reference_model(config, stage_n, run_n)).layers_vs:
+        _plot_models(config, stage_n, run_n, model_n=2)
+
+
+def _plot_models(config, stage_n, run_n, model_n):
+
+    # model_n: 1 = Vp, 2 = Vs
+    suffix = "" if model_n == 1 else "_vs"
 
     if stage_n == 1:
 
         root = Path("outputs/stage_01")
         run_dir = root / f"run_{run_n:02d}"
 
-        fig_outfile = Path("figures") / f"models_st01_run_{run_n:02d}.png"
+        fig_outfile = Path("figures") / f"models_st01_run_{run_n:02d}{suffix}.png"
 
     elif stage_n == 3:
 
         root = Path("outputs/stage_03")
         run_dir = root / f"run_{run_n:02d}"
 
-        fig_outfile = Path("figures") / f"models_st03_run_{run_n:02d}.png"
+        fig_outfile = Path("figures") / f"models_st03_run_{run_n:02d}{suffix}.png"
 
     # the model this run's random ensemble was generated around
     imodel = read_vmodel(ensemble_reference_model(config, stage_n, run_n))
@@ -217,24 +228,28 @@ def plot_models(config, stage_n, run_n):
     omodels = []
     for omodel_file in omodels_files:
         omodel = final_state(read_csv(omodel_file))
-        omodel = omodel[omodel.model == 1]
+        omodel = omodel[omodel.model == model_n]
         omodels.append(omodel[["velocity", "depth"]])
 
     amodel = read_csv(amodel_file)
     amodel = amodel[
-        (amodel.model == 1) & (amodel.iteration == amodel.iteration.max())
+        (amodel.model == model_n)
+        & (amodel.iteration == amodel.iteration.max())
     ]
     smodel = read_csv(smodel_file)
     smodel = smodel[
-        (smodel.model == 1) & (smodel.iteration == smodel.iteration.max())
+        (smodel.model == model_n)
+        & (smodel.iteration == smodel.iteration.max())
     ]
 
     figsize = (4.5 / 2.54, 6.0 / 2.54)
     dpi = 300
     show_initial = True
+    # Vs axis: the Vp limits scaled by a typical crustal Vp/Vs
+    scale = 1.0 if model_n == 1 else 1.0 / 1.73
     xlim = (
-        config.FIGURE_SETTINGS.min_vel_vp,
-        config.FIGURE_SETTINGS.max_vel_vp,
+        config.FIGURE_SETTINGS.min_vel_vp * scale,
+        config.FIGURE_SETTINGS.max_vel_vp * scale,
     )
     ylim = (
         config.FIGURE_SETTINGS.max_vel_depth,
@@ -245,8 +260,8 @@ def plot_models(config, stage_n, run_n):
     # Select velocity type
     # ---------------------------------------------------------
 
-    layer_attribute = "layers_vp"
-    initial_layers = imodel.layers_vp
+    layer_attribute = "layers_vp" if model_n == 1 else "layers_vs"
+    initial_layers = getattr(imodel, layer_attribute)
 
     # ---------------------------------------------------------
     # Create figure
@@ -408,7 +423,7 @@ def plot_models(config, stage_n, run_n):
     # ---------------------------------------------------------
 
     ax.format(
-        xlabel="Vp (km/s)",
+        xlabel="Vp (km/s)" if model_n == 1 else "Vs (km/s)",
         xlabelweight="bold",
         xformatter="%.1f",
         xlim=xlim,
