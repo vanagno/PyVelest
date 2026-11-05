@@ -989,3 +989,48 @@ def read_velest_inversion(filename):
         "hypocenter_summary":
             hypocenter_summary_df,
     }
+
+RAY_STATISTICS_COLUMNS = ["layer", "top", "n_hypocenters", "n_headwaves", "n_rays"]
+
+
+def read_ray_statistics(filename):
+    """VELEST's "RAY-STATISTICS FOR LAST ITERATION" table of velout.inv.
+
+    One row per layer: layer number, top (km), hypocentres in the layer,
+    head waves along its top and rays through it (NHYP, NREF, NHIT). In
+    phase mode 2 VELEST counts the P and S rays of a layer together in rows
+    1..n (n layers), and the rows below them are not layers. Counts VELEST
+    could not print (*****) are NaN.
+    """
+    lines = Path(filename).read_text(errors="replace").splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if "RAY-STATISTICS FOR" in line:
+            start = i
+    rows = []
+    if start is None:
+        return DataFrame(rows, columns=RAY_STATISTICS_COLUMNS)
+
+    def count(line, a, b):
+        try:
+            return int(line[a:b])
+        except ValueError:
+            return nan
+
+    # Fortran format (2x,i2,3x,f6.2,'...',f6.2,' km   ',f5.2,' km/s',
+    # 2(1x,i4),1x,f5.1,1x,i5,...): fixed columns
+    for line in lines[start:]:
+        if line.startswith(" Total nr of events"):
+            break
+        if not re.match(r"^\s+\d+\s+-?\d+\.\d+\.\.\.", line):
+            continue
+        rows.append(
+            {
+                "layer": int(line[2:4]),
+                "top": float(line[7:13]),
+                "n_hypocenters": count(line, 39, 43),
+                "n_headwaves": count(line, 44, 48),
+                "n_rays": count(line, 55, 60),
+            }
+        )
+    return DataFrame(rows, columns=RAY_STATISTICS_COLUMNS)

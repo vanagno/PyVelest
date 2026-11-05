@@ -2,7 +2,7 @@ from ultraplot import Figure
 from matplotlib import rcParams
 from pathlib import Path
 from src.io.model import read_vmodel, final_state, ensemble_reference_model
-from numpy import array, asarray, arange, linspace, cos, radians
+from numpy import append, array, asarray, arange, linspace, cos, radians
 from pandas import read_csv, concat
 from obspy.geodetics.base import degrees2kilometers as d2k
 
@@ -256,6 +256,14 @@ def _plot_models(config, stage_n, run_n, model_n):
         config.FIGURE_SETTINGS.min_vel_depth,
     )
 
+    def half_space(velocity, depth):
+        """Layer tops and velocities as a step line that also draws the
+        half-space, down to below the plot."""
+        velocity = asarray(velocity, dtype=float)
+        depth = asarray(depth, dtype=float)
+        bottom = max(2.0 * ylim[0], depth[-1] + 1.0)
+        return append(velocity, velocity[-1]), append(depth, bottom)
+
     # ---------------------------------------------------------
     # Select velocity type
     # ---------------------------------------------------------
@@ -287,8 +295,7 @@ def _plot_models(config, stage_n, run_n, model_n):
         )
 
         ax.plot(
-            velocity,
-            depth,
+            *half_space(velocity, depth),
             drawstyle="steps-pre",
             linewidth=0.6,
             label="Initial model",
@@ -316,8 +323,7 @@ def _plot_models(config, stage_n, run_n, model_n):
 
         # Stepwise layered velocity model
         ax.plot(
-            velocity,
-            depth,
+            *half_space(velocity, depth),
             drawstyle="steps-pre",
             linewidth=0.4,
             label="Random models" if i == 0 else None,
@@ -336,8 +342,7 @@ def _plot_models(config, stage_n, run_n, model_n):
 
         # Stepwise layered velocity model
         ax.plot(
-            velocity,
-            depth,
+            *half_space(velocity, depth),
             drawstyle="steps-pre",
             linewidth=0.6,
             label="Inverted models" if i == 0 else None,
@@ -355,8 +360,7 @@ def _plot_models(config, stage_n, run_n, model_n):
 
     # Stepwise layered velocity model
     ax.plot(
-        velocity,
-        depth,
+        *half_space(velocity, depth),
         drawstyle="steps-pre",
         linewidth=0.6,
         label="Averaged model",
@@ -373,8 +377,7 @@ def _plot_models(config, stage_n, run_n, model_n):
 
     # Stepwise layered velocity model
     ax.plot(
-        velocity,
-        depth,
+        *half_space(velocity, depth),
         drawstyle="steps-pre",
         linewidth=1.0,
         label="Simplified model",

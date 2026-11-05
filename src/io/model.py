@@ -486,26 +486,69 @@ def write_vmodel(vmodel: VMODEL, vmodelout: str | Path):
                     )
 
 
+def layer_dampings(config, depths):
+    """vdamp of each layer of a model whose layer tops are ``depths`` (km).
+
+    SYNTHETIC_MODELS.first_layer_dmp for the first layer, last_layer_dmp for
+    the half-space and, in between, the layer_dmp value of the deepest
+    from_km at or above the middle of the layer (1.0 above the shallowest).
+    The middle, not the top, so that the small depth changes of the random
+    models do not move a layer starting at a from_km out of its range.
+    """
+    sm = config.SYNTHETIC_MODELS
+    ranges = sorted((sm.layer_dmp or {}).items())
+    dampings = []
+    for i, top in enumerate(depths):
+        if i == 0:
+            dampings.append(sm.first_layer_dmp)
+        elif i == len(depths) - 1:
+            dampings.append(sm.last_layer_dmp)
+        else:
+            middle = (top + depths[i + 1]) / 2.0
+            vdamp = 1.0
+            for from_km, value in ranges:
+                if middle >= from_km:
+                    vdamp = value
+            dampings.append(vdamp)
+    return dampings
+
+
+def set_layer_dampings(config, layers):
+    """Give the layers of one part (P or S) of a model their vdamp."""
+    dampings = layer_dampings(config, [layer.depth for layer in layers])
+    for layer, vdamp in zip(layers, dampings):
+        layer.vdamp = vdamp
+
+
+def describe_dampings(layers):
+    """'-3 to 0 km: 50 | 0 to 13 km: 1 | ... | below 31 km: 10'."""
+
+    def km(depth):
+        return f"{round(depth, 1):g}"
+
+    parts, start = [], 0
+    for i in range(1, len(layers)):
+        if i == len(layers) - 1 or layers[i].vdamp != layers[start].vdamp:
+            parts.append(
+                f"{km(layers[start].depth)} to {km(layers[i].depth)} km: "
+                f"{layers[start].vdamp:g}"
+            )
+            start = i
+    parts.append(f"below {km(layers[-1].depth)} km: {layers[-1].vdamp:g}")
+    return " | ".join(parts)
+
+
 def simplified2vmodel(config, simplified_modelfile, final_modelfile):
-    first_layer_dmp = config.SYNTHETIC_MODELS.first_layer_dmp
-    last_layer_dmp = config.SYNTHETIC_MODELS.last_layer_dmp
     model_df = read_csv(simplified_modelfile)
     vp_df = model_df[model_df.model == 1].reset_index(drop=True)
     vs_df = model_df[model_df.model == 2].reset_index(drop=True)
     n_layers = len(vp_df)
 
     def layers(df):
+        dampings = layer_dampings(config, df.depth.tolist())
         return [
             LAYER.model_validate(
-                {
-                    "vel": row.velocity,
-                    "depth": row.depth,
-                    "vdamp": (
-                        first_layer_dmp
-                        if i == 0
-                        else last_layer_dmp if i == n_layers - 1 else 1.0
-                    ),
-                }
+                {"vel": row.velocity, "depth": row.depth, "vdamp": dampings[i]}
             )
             for i, row in df.iterrows()
         ]
@@ -526,12 +569,22 @@ def write_start_model(config):
     """Write INPUTS.vmodel to START_MODEL in the form the phase mode needs.
 
     Phase mode 2 inverts an S model of its own: a model without one gets
-    Vs = Vp / vp_vs_ratio in every layer (same depths and damping), and an S
-    part in INPUTS.vmodel is used as it is. Phase modes 1 and 3 read only the
-    P model, so an S part is left out.
+    Vs = Vp / vp_vs_ratio in every layer (same depths), and an S part in
+    INPUTS.vmodel is used as it is. Phase modes 1 and 3 read only the P
+    model, so an S part is left out. The layer damping (vdamp) is that of
+    SYNTHETIC_MODELS (layer_dampings), in the P and the S part.
     """
     velocity = read_velest_config(config, 1).VELOCITY
     vmodel = read_vmodel(config.INPUTS.vmodel)
+    file_dampings = [layer.vdamp for layer in vmodel.layers_vp]
+    set_layer_dampings(config, vmodel.layers_vp)
+    set_layer_dampings(config, vmodel.layers_vs or [])
+    print(f"+++ Layer damping (vdamp): {describe_dampings(vmodel.layers_vp)}")
+    if file_dampings != [layer.vdamp for layer in vmodel.layers_vp]:
+        print(
+            f"!!! The vdamp column of {config.INPUTS.vmodel} is replaced by "
+            "SYNTHETIC_MODELS' first_layer_dmp, layer_dmp and last_layer_dmp"
+        )
     if velocity.phase_mode == 2 and not vmodel.layers_vs:
         vmodel.layers_vs = [
             LAYER(
@@ -676,6 +729,50 @@ def prepare_model(config, stage_n, run_n=None):
         copy(model_input, run_dir)
 
 
+def summarize_ray_statistics(model_dirs, outfile):
+    """Median ray counts per layer over the inversions of a run (their
+    ray_statistics.csv), written to outfile and printed. Layers no ray
+    reaches keep their velocities, whatever their damping."""
+    tables = []
+    for model_dir in model_dirs:
+        rays_file = model_dir / "ray_statistics.csv"
+        if not rays_file.exists():
+            continue
+        n_layers = read_vmodel(model_dir / "model.mod").n_layers
+        rays = read_csv(rays_file)
+        # in phase mode 2 the rows after the n layers are not layers
+        tables.append(rays[rays.layer <= n_layers])
+    if not tables:
+        return
+    rays = (
+        concat(tables)
+        .groupby("layer", as_index=False)
+        .agg(
+            top=("top", "mean"),
+            n_hypocenters=("n_hypocenters", "median"),
+            n_headwaves=("n_headwaves", "median"),
+            n_rays=("n_rays", "median"),
+        )
+    )
+    outfile.parent.mkdir(parents=True, exist_ok=True)
+    rays.to_csv(outfile, index=False, float_format="%.2f")
+    print(
+        f"+++ Rays per layer top (median of {len(tables)} inversions; P and "
+        "S rays together): "
+        + " | ".join(
+            f"{round(r.top, 1):g} km {r.n_rays:.0f}" for r in rays.itertuples()
+        )
+    )
+    reached = (rays.n_rays > 0) | (rays.n_headwaves > 0)
+    if not reached.iloc[-1]:
+        last = reached[reached].index.max() if reached.any() else -1
+        print(
+            f"+++ No ray reaches the layers from {rays.top[last + 1]:.1f} km "
+            "down: VELEST leaves their velocities as they are, whatever "
+            "their damping"
+        )
+
+
 def finalized_inverted_models(config, stage_n, run_n):
 
     if stage_n == 1:
@@ -694,6 +791,10 @@ def finalized_inverted_models(config, stage_n, run_n):
         if (run_dir / f"model_{n:02d}" / "velocity_summary.csv").exists()
     ]
     print(f"+++ Averaging {len(omodel_files)} of {n_models} inverted models")
+    summarize_ray_statistics(
+        [f.parent for f in omodel_files],
+        run_dir / "summary" / "ray_statistics.csv",
+    )
 
     # outputs
     averaged_modelfile = run_dir / "summary" / "averaged.csv"

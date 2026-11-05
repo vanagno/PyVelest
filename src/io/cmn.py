@@ -66,6 +66,8 @@ def read_velest_config(config, stage_n: int) -> VELEST_CONFIG:
         velest.VELOCITY.phase_mode = vs.phase_mode
     if vs.vp_vs_ratio is not None:
         velest.VELOCITY.vp_vs_ratio = vs.vp_vs_ratio
+    if vs.maximum_distance is not None:
+        velest.RELOCATION.maximum_distance = vs.maximum_distance
     return velest
 
 
@@ -323,7 +325,8 @@ def prepare_cmn(config, stage_n, run_n=None):
             print(
                 f"+++ VELEST origin: lat {c.origin_latitude:.4f}, lon "
                 f"{-c.origin_longitude:.4f} (East positive); "
-                f"{phases[v.VELOCITY.phase_mode]}"
+                f"{phases[v.VELOCITY.phase_mode]}; maximum distance "
+                f"{v.RELOCATION.maximum_distance:g} km"
             )
         for n_model in range(1, config.SYNTHETIC_MODELS.n_models + 1):
             model_dir = run_dir / f"model_{n_model:02d}"

@@ -327,6 +327,9 @@ the realistic depth uncertainty for this network.
   `fix_first_layer_bottom`.
 * The YAML keys now match the VELEST config fields. Five keys used to be ignored silently; unknown keys
   are now errors.
+* Dataset settings that override the stage files (`VELEST_SETTINGS`: origin, phase mode, Vp/Vs, maximum
+  distance) and per-layer velocity damping by depth (`SYNTHETIC_MODELS.layer_dmp`); each run of stages 1
+  and 3 logs the rays per layer (`summary/ray_statistics.csv`).
 
 **Correctness fixes.** Three review rounds, each finding checked independently, found these. Those
 marked † were already in the original code and would affect other datasets too.
@@ -411,6 +414,27 @@ Settings to check when a config is copied from the Ioannina ones:
   1.77 both gave Vp/Vs 1.77–1.88 down to about 13 km; deeper, each stayed near its start. The starting
   model used is saved as `outputs/stage_01/start_model.mod`, and the model figures get a Vs version
   (`*_vs.png`).
+* **Layer damping.** `SYNTHETIC_MODELS.layer_dmp` sets VELEST's velocity damping per layer (the vdamp
+  column of the model files) by depth, as `{from_km: vdamp}`; `first_layer_dmp` and `last_layer_dmp`
+  still set the dummy layer and the half-space. VELEST damps a layer's velocity by the stage's
+  `DAMPING.velocity` × vdamp², so vdamp 3 turns stage 1's 0.1 into 0.9 and stage 3's 1.0 into 9. A
+  layer takes the value of the deepest `from_km` at or above its middle (1.0 above the shallowest
+  `from_km`); the middle, so that a layer starting at a `from_km` stays in its range when the random
+  models move its top. The values replace the vdamp column of `INPUTS.vmodel` (the log says so when
+  they differ) and are given to every averaged model, so they hold in every run of stages 1 and 3.
+  Before, only the first stage-1 run used the file's column, and the averaged models went back to 1.0.
+  Damping only acts where there are rays: each run logs the median number of rays per layer ("Rays per
+  layer top", also in `summary/ray_statistics.csv`), and VELEST leaves the velocity of a layer that no
+  ray reaches as it is, whatever its damping. On Evia (test: 400 events, 6 models, phase mode 2,
+  `maximum_distance: 80`), the median rays per layer in the last stage-3 run fall from 6,000–9,000 in the
+  top 5 km to 260–790 at 8–13 km, 0–30 at 13–16 km and none below 16–20 km. The model there is that of
+  `INPUTS.vmodel`, not the data's. With two random seeds, `layer_dmp: {8.0: 3.0}` changed the final
+  relocations by less than the seeds differ from each other: median RMS 0.100 / 0.110 s against
+  0.120 / 0.110 s without it, and 5,526 / 4,437 events with a reliable depth against 4,123 / 4,784. Both
+  seeds agreed only on where the change went: with it, 2–6 km came out up to 0.15 km/s faster and the
+  mean station delays grew by about 0.1 s (P) and 0.2 s (S).
+* **Maximum distance.** `VELEST_SETTINGS.maximum_distance` overrides `RELOCATION.maximum_distance` of
+  all stage files (150 km).
 * **Station codes of at most 4 characters.** VELEST cannot read longer ones (Evia: `SAGMA`). Rename
   them in both the station table and the catalog, e.g. with `--rename SAGMA=SAGM` below. PyVelest
   stops at start-up if one is left.

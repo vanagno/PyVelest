@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 from subprocess import run
 
-from src.io.velest import read_velest_inversion
+from src.io.velest import read_velest_inversion, read_ray_statistics
 from src.io.catalog import cnv2csv
 from tqdm import tqdm
 
@@ -30,6 +30,8 @@ PARSED_OUTPUTS = {
     "velocity_summary": "velocity_states.csv",
     "velocity_states": "velocity_summary.csv",
 }
+# VELEST's ray statistics of the last iteration (read_ray_statistics)
+RAY_STATISTICS = "ray_statistics.csv"
 
 
 def _velest_exec(config) -> Path:
@@ -54,7 +56,9 @@ def _execute(exe: Path, workdir: Path, single_event: bool = False) -> str | None
 
     Returns None on success, otherwise a short error description.
     """
-    for name in VELEST_OUTPUTS + list(PARSED_OUTPUTS.values()):
+    for name in VELEST_OUTPUTS + list(PARSED_OUTPUTS.values()) + [
+        RAY_STATISTICS
+    ]:
         (workdir / name).unlink(missing_ok=True)
 
     result = run(
@@ -95,6 +99,14 @@ def _execute_and_parse(
             results[key].to_csv(workdir / name, index=False)
     except Exception as exc:  # parsing problems must not pass silently
         return f"could not parse velout.inv: {exc}"
+    try:
+        # only reported (summary/ray_statistics.csv), so a table it cannot
+        # read is left out instead of failing the inversion
+        rays = read_ray_statistics(workdir / "velout.inv")
+        if not rays.empty:
+            rays.to_csv(workdir / RAY_STATISTICS, index=False)
+    except Exception as exc:
+        print(f"!!! Ray statistics of {workdir} not read: {exc}")
     if need_velocity and results["velocity_states"].empty:
         # VELEST rejected every step of an early iteration and stopped
         # before adjusting the velocities: the model is still the random

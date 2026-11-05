@@ -89,8 +89,23 @@ SYNTHETIC_MODELS:
   depth_std: 0.5
   seed: 1
   merging_threshold_km_s: 0.01
+  # Per-layer velocity damping (vdamp column of the model files). VELEST
+  # damps a layer's velocity by DAMPING.velocity of the stage file x
+  # vdamp^2: vdamp 3 gives 0.9 instead of 0.1 in stage 1 and 9 instead of 1
+  # in stage 3. first_layer_dmp: the dummy layer; last_layer_dmp: the
+  # half-space; layer_dmp: the layers in between, by depth as {from_km:
+  # vdamp} (a layer takes the value of the deepest from_km at or above its
+  # middle; 1.0 above the shallowest). Empty: 1.0 for all of them. These
+  # values replace the vdamp column of INPUTS.vmodel. Layers no ray reaches
+  # (see "Rays per layer top" in the log) do not change whatever their
+  # damping: with maximum_distance 80, none below about 16 km. Example,
+  # damping 8 km and deeper (a few hundred rays) 9 times more than above:
+  #   layer_dmp: {8.0: 3.0}
+  # In two short tests this changed the fit less than the random seed did
+  # (docs/ioannina_workflow.md, section 9).
   first_layer_dmp: 50
   last_layer_dmp: 10
+  layer_dmp:
   # The first layer (-3..0 km) is a fixed dummy layer for station
   # elevations: keep its bottom at 0 km in the random models
   fix_first_layer_bottom: true
@@ -128,6 +143,9 @@ VELEST_SETTINGS:
   # Empty: the stage files' value (3). With 2, an S part in INPUTS.vmodel is
   # the starting S model; without one, Vs = Vp / vp_vs_ratio.
   phase_mode:
+  # Largest epicentral distance (km) of the picks VELEST uses. Empty: the
+  # stage files' value (150).
+  maximum_distance: 80
 
 REPORT_SETTINGS:
   report_on: false

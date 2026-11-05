@@ -171,8 +171,28 @@ class SYNTHETIC_MODELS_(BaseModel):
     # when the first layer is a fixed dummy layer above sea level).
     fix_first_layer_bottom: bool = False
     merging_threshold_km_s: float = Field(default=0.2, ge=0.0)
-    first_layer_dmp: int = Field(default=50, ge=0)
-    last_layer_dmp: int = Field(default=10, ge=0)
+    # Per-layer velocity damping: the vdamp column of the model files.
+    # VELEST damps a layer's velocity by the stage's velocity damping
+    # (DAMPING.velocity) x vdamp^2. first_layer_dmp: the first (top) layer;
+    # last_layer_dmp: the half-space; layer_dmp: the layers in between, by
+    # depth, as {from_km: vdamp}. A layer takes the value of the deepest
+    # from_km at or above its middle, and 1.0 above the shallowest from_km.
+    # The values replace the vdamp column of INPUTS.vmodel and are given
+    # again to every averaged model; random models keep the values of the
+    # model they were generated from.
+    first_layer_dmp: float = Field(default=50, gt=0.0, le=1000.0)
+    last_layer_dmp: float = Field(default=10, gt=0.0, le=1000.0)
+    layer_dmp: Optional[dict[float, float]] = None
+
+    @model_validator(mode="after")
+    def check_layer_dmp(self):
+        # (numpy's any/all are imported in this module; avoid them here)
+        for from_km, vdamp in (self.layer_dmp or {}).items():
+            if not 0.0 < vdamp <= 1000.0:
+                raise ValueError(
+                    f"layer_dmp {from_km}: {vdamp}: vdamp must be in (0, 1000]"
+                )
+        return self
 
 class STAGE_01_(BaseModel):
     """Settings for stage_01"""
@@ -245,6 +265,9 @@ class VELEST_SETTINGS_(BaseModel):
     # Phase mode 3: the fixed ratio. Phase mode 2: Vs of the starting model
     # when INPUTS.vmodel has no S part (an S part in it is used as it is).
     vp_vs_ratio: Optional[float] = Field(default=None, gt=1.0)
+    # Largest epicentral distance (km) of the observations VELEST uses
+    # (RELOCATION.maximum_distance of the stage files).
+    maximum_distance: Optional[float] = Field(default=None, gt=0.0, le=1000.0)
 
 
 class GLOBAL_SETTINGS_(BaseModel):
