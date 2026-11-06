@@ -373,6 +373,14 @@ marked † were already in the original code and would affect other datasets too
   so runs can go in parallel.
 * `pyvelest.py --config/--stages`.
 * `src/exc/build_velest.sh` builds a double-precision VELEST with gfortran; it is the default executable.
+* **Faster simultaneous inversions.** VELEST solves one matrix with four unknowns per event, but each
+  hypocentre couples only to itself and to the velocity and station parameters. Its Cholesky
+  decomposition (`LUDECP`) and the accumulation of the normal equations (`OUTER`) now skip the exact
+  zeros this leaves, with the same results (identical output files in tests). On Evia, one stage-1
+  inversion took 9 s instead of 184 s with 1,000 events, and 100 s instead of several hours with 3,000
+  (the original needed more than 6 minutes before its first iteration). Rebuild the executable after
+  updating (`sh src/exc/build_velest.sh`); PyVelest warns when it is older than `velest.f`. Memory still
+  grows with the square of the events: about 600 MB per inversion with 3,000 events, times `n_jobs`.
 
 ---
 

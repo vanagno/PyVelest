@@ -6959,6 +6959,49 @@ c    s(i) one row of the matrix (A) .
 c    n - the length of s(i)
 c    w - a weight for the least squares.
 c
+c
+c   PyVelest: the non-zero elements of s are listed first, and the loops
+c   run over that list in the same order as over s (same results).
+c
+      implicit none
+      integer n
+      real s(n),g((n*(n-1)/2)+n),w
+      integer i,j,nsym,ii,jj,nz,maxn
+      parameter (maxn=20000)
+      integer inz(maxn)
+      real a,b
+c
+      if (n .gt. maxn) then
+         call OUTERFULL(g,s,n,w)
+         return
+      endif
+      nz=0
+      do 3 i=1,n
+      if(s(i).eq.0) goto 3
+      nz=nz+1
+      inz(nz)=i
+  3   continue
+c
+      do 1 ii=1,nz
+      i=inz(ii)
+      a=s(i)*w
+c
+      do 2 jj=1,ii
+      j=inz(jj)
+      b=s(j)*a
+c
+      nsym=((i*(i-1))/2) + j
+      g(nsym)=g(nsym) + b
+  2   continue
+c
+  1   continue
+      return
+      end ! of subr. outer
+c
+      subroutine OUTERFULL(g,s,n,w)
+c
+c   the original OUTER
+c
       implicit none
       integer n
       real s(n),g((n*(n-1)/2)+n),w
@@ -6979,7 +7022,7 @@ c
 c
   1   continue
       return
-      end ! of subr. outer
+      end ! of subr. outerfull
 c
       subroutine RSIDE(rht,s,n,res,w)
 c
@@ -7696,6 +7739,83 @@ c     !!! diagonal elements of UL are stored in reziprocal form !!!
 c     det(A) = D1*(2.**D2)      d1, d2 is output of LUDECP
 c     IER=0  --> A is pos. def.;    everything o.k.
 c
+c     Profile version (PyVelest), same results as LUDECPFULL: row i of UL
+c     is zero left of the first non-zero element of row i of A (ifst(i)),
+c     so the dot product of rows i and j starts at max(ifst(i),ifst(j))
+c     and the elements left of ifst(i) keep their zero. The terms left
+c     out are products with an exact zero. In the simultaneous inversion
+c     each hypocentre couples only to itself and to the velocity and
+c     station parameters, which come after all hypocentres: the n**3/6
+c     operations of the full loops drop to about n*(those parameters)**2/2.
+c
+      implicit none
+      integer n
+      integer ier
+      real   d1,d2
+      real   a(n*(n+1)/2),ul(n*(n+1)/2)
+      real   zero,one,four,sixtn,sixth,rn,x
+      integer i,j,k,k0,ii,jj,maxn
+      parameter (maxn=20000)
+      integer ifst(maxn)
+      data   zero,one,four,sixtn,sixth/0.0,1.,4.,16.,.0625/
+c
+      if (n .gt. maxn) then
+         call LUDECPFULL (a,ul,n,d1,d2,ier)
+         return
+      endif
+      d1=one
+      d2=zero
+      rn=one/(n*sixtn)
+      ier=0
+      do 45 i=1,n
+c        element (i,j) is at ii+j
+         ii=(i*(i-1))/2
+         ifst(i)=i
+         do 2 j=1,i-1
+            if (a(ii+j) .ne. zero) then
+               ifst(i)=j
+               go to 3
+            endif
+    2    continue
+    3    continue
+         do 40 j=ifst(i),i
+            jj=(j*(j-1))/2
+            x=a(ii+j)
+            k0=max(ifst(i),ifst(j))
+            do 5 k=k0,j-1
+               x=x-ul(ii+k)*ul(jj+k)
+    5       continue
+            if (i.ne.j) go to 30
+            d1=d1*x
+            if (a(ii+i)+x*rn .le. a(ii+i)) go to 50
+   15       if (abs(d1) .le. one) go to 20
+            d1=d1 * sixth
+            d2=d2 + four
+            go to 15
+   20       if (abs(d1) .ge. sixth) go to 25
+            d1=d1 * sixtn
+            d2=d2 - four
+            go to 20
+   25       ul(ii+i)=one/sqrt(x)
+            go to 40
+   30       ul(ii+j)=x * ul(jj+j)
+   40    continue
+   45 continue
+      go to 9005
+   50 ier=129
+ 9005 return
+      end ! of subr. ludecp
+c
+      subroutine LUDECPFULL (a,ul,n,d1,d2,ier)
+c
+c     function:        - cholesky decomposition of a matrix A -
+c     ---------
+c     A   nxn pos. def. symm. matrix, stored in symm. storage mode
+c     UL  nxn lower triangular matrix,  with UL * ULt = A
+c     !!! diagonal elements of UL are stored in reziprocal form !!!
+c     det(A) = D1*(2.**D2)      d1, d2 is output of LUDECP
+c     IER=0  --> A is pos. def.;    everything o.k.
+c
       implicit none
       integer n
       integer ier
@@ -7743,7 +7863,7 @@ c
    50 ier=129
  9000 continue
  9005 return
-      end ! of subr. ludecp
+      end ! of subr. ludecpfull
 c
       subroutine luelmp (a,b,n,x)
 c

@@ -48,7 +48,24 @@ def _velest_exec(config) -> Path:
             "    (or build one with src/exc/build_velest.sh and set "
             "GLOBAL_SETTINGS.velest_exec)"
         )
+    # a local build (not the bundled src/exc/velest) older than the source
+    source = exe.parent / "velest.f"
+    if (
+        exe.name != "velest"
+        and source.is_file()
+        and exe.stat().st_mtime < source.stat().st_mtime
+        and exe not in _WARNED_STALE
+    ):
+        _WARNED_STALE.add(exe)
+        print(
+            f"!!! {exe} is older than {source}: rebuild it with "
+            f"sh {exe.parent / 'build_velest.sh'}"
+            + ("" if exe.name == "velest_gfortran" else f" {exe.name}")
+        )
     return exe
+
+
+_WARNED_STALE = set()
 
 
 def _execute(exe: Path, workdir: Path, single_event: bool = False) -> str | None:

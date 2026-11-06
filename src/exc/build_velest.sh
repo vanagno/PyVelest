@@ -13,6 +13,12 @@
 # is. Its static arrays exceed 2 GB (only the part in use is ever touched),
 # hence -mcmodel=medium (x86-64).
 #
+# velest.f also skips exact zeros in the normal equations (subroutines
+# LUDECP and OUTER, marked PyVelest): each hypocentre couples only to itself
+# and to the model and station parameters, so the Cholesky decomposition
+# no longer costs n**3/6 operations. The results are the same; a stage-1
+# inversion of 3000 events takes ~100 s instead of hours.
+#
 #   sh src/exc/build_velest.sh            # -> src/exc/velest_gfortran
 #   sh src/exc/build_velest.sh my_velest  # -> src/exc/my_velest
 set -e
